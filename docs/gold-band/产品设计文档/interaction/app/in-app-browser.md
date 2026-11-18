@@ -165,7 +165,7 @@ BrowserPanel
 
 - 使用 Tauri 官方 `Webview` 的 `setPosition` / `setSize` / `show` / `hide` / `close`。创建子 WebView 所需 capability 与 `unstable` 特征在开发方案中记录。Windows 上所有会创建、关闭或操作子 WebView 的命令必须是 async，禁止从同步 IPC 命令调用 `add_child`。
 - 同步必须同时覆盖 **尺寸变化和位移**。仅 `ResizeObserver` 不够：左栏收起而右栏宽度不变时，`x` 会变、`width` 不变。Shell 在 `setLayout` 和面板 `onLayoutChanged` 上发出布局帧，占位组件收到后重新测量；`visualViewport` 的 resize 覆盖缩放。Sheet 开关与 Tab 激活仍走显隐恢复和 `pageId` 变化。这些后续测量继续走 rAF 合并，不写 React state。
-- 坐标使用逻辑像素，与 `getBoundingClientRect()` 对齐，并处理 DPI。
+- 坐标契约（2026-11-01 界面缩放调整）：前端把 `getBoundingClientRect()` 的 CSS 像素统一乘以 `window.devicePixelRatio`（= 系统缩放 × 界面缩放）后发送，原生侧以**物理像素** `PhysicalPosition/PhysicalSize` 消费；子 WebView 因此在任意界面缩放下都与 DOM 占位盒对齐。Tauri 逻辑单位只含系统缩放，界面缩放 ≠100% 时会让子 WebView 错位，禁止回退。
 - 同步热路径禁止每次回调两次无合并 IPC；禁止把逐像素写入 React 根 state。rAF 合并必须读取最新 bounds，不得把同一帧内的后续尺寸丢掉。
 - 原生 create 未完成时占位盒仍可能继续布局；create 成功后必须把当时最新的占位矩形应用到 WebView，不能沿用发起 create 时的第一帧尺寸。实例变为 live 后要再同步一次，且不得因此 hide。create 失败时，若该页仍有已保留的原生窗口，仍把最新占位矩形写到窗口上，不能因为这次创建失败就停在旧位置。
 - 占位组件的原生显隐生命周期只绑定 `pageId` 与可见性，不得因 title、loading 或 url 投影更新而卸载观察器或 `hideAll`。

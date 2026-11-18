@@ -1,4 +1,6 @@
 import { getRuntimeApi } from './api/client';
+export function resolveRightWorkspaceFileTarget(source: import('./types').PromptWorkspaceFileRef) { return getRuntimeApi().resolveRightWorkspaceFileTarget(source); }
+export function revealRightWorkspaceFile(source: import('./types').PromptWorkspaceFileRef) { return getRuntimeApi().revealRightWorkspaceFile(source); }
 import { AGENT_MODEL_CONFIG_UPDATED_EVENT } from './lib/agent-diagnostic-update';
 import type { RuntimeApi } from './api/client';
 import type { CreateWorkspaceEntryInput, FeishuScanMode, ResolvedColorScheme, WorkspaceRootRef } from './types';
@@ -118,6 +120,10 @@ export function createProfile(input: Parameters<ReturnType<typeof getRuntimeApi>
 
 export function importProfilesFromFolder(folderPath: string, dynamicTemplate: boolean) {
   return getRuntimeApi().importProfilesFromFolder(folderPath, dynamicTemplate);
+}
+
+export function importProfilesFromFiles(filePaths: string[], dynamicTemplate: boolean) {
+  return getRuntimeApi().importProfilesFromFiles(filePaths, dynamicTemplate);
 }
 
 export function updateProfile(id: string, input: Parameters<ReturnType<typeof getRuntimeApi>['updateProfile']>[1]) {
@@ -240,8 +246,12 @@ export function submitManualCheck(projectId: string | null | undefined, taskId: 
   return getRuntimeApi().submitManualCheck(projectId, taskId, runId, roundId, nodeId, attemptId, outcome);
 }
 
-export function retryRun(taskId: string, runId: string) {
-  return getRuntimeApi().retryRun(taskId, runId);
+export function retryCurrentNode(request: Parameters<ReturnType<typeof getRuntimeApi>['retryCurrentNode']>[0]) {
+  return getRuntimeApi().retryCurrentNode(request);
+}
+
+export function rerunFailedNode(request: Parameters<ReturnType<typeof getRuntimeApi>['rerunFailedNode']>[0]) {
+  return getRuntimeApi().rerunFailedNode(request);
 }
 
 export function getLogPage(query: Parameters<ReturnType<typeof getRuntimeApi>['getLogPage']>[0]) {
@@ -250,6 +260,10 @@ export function getLogPage(query: Parameters<ReturnType<typeof getRuntimeApi>['g
 
 export function getAcpSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: Parameters<ReturnType<typeof getRuntimeApi>['getAcpSession']>[6], fallback?: Parameters<ReturnType<typeof getRuntimeApi>['getAcpSession']>[7], outerNodeId?: string | null, outerAttemptId?: string | null) {
   return getRuntimeApi().getAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, query, fallback, outerNodeId, outerAttemptId);
+}
+
+export function getConversationTurnIndex(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, branchId?: string | null, afterSeq?: number | null, outerNodeId?: string | null, outerAttemptId?: string | null, beforeSeq?: number | null) {
+  return getRuntimeApi().getConversationTurnIndex(projectId, taskId, runId, roundId, nodeId, attemptId, branchId, afterSeq, outerNodeId, outerAttemptId, beforeSeq);
 }
 
 export function reportSourceControlLoad(report: import("@/lib/source-control-load-diagnostics").SourceControlLoadReport) {
@@ -517,8 +531,12 @@ export function reorderConversationQueuedPrompts(projectId: string | null | unde
   return getRuntimeApi().reorderConversationQueuedPrompts(projectId, taskId, runId, roundId, nodeId, attemptId, expectedRevision, orderedItemIds, outerNodeId, outerAttemptId);
 }
 
-export function restoreConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
-  return getRuntimeApi().restoreConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId);
+export function getConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().getConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId);
+}
+
+export function releaseConversationQueuedPromptEdit(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().releaseConversationQueuedPromptEdit(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId);
 }
 
 export function deleteConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
@@ -545,8 +563,8 @@ export function saveConversationComposerDraft(projectId: string | null | undefin
   return getRuntimeApi().saveConversationComposerDraft(projectId, taskId, input, attachmentPaths);
 }
 
-export function takeConversationComposerDraft(projectId: string | null | undefined, taskId: string, draftId: string) {
-  return getRuntimeApi().takeConversationComposerDraft(projectId, taskId, draftId);
+export function getConversationComposerDraft(projectId: string | null | undefined, taskId: string, draftId: string) {
+  return getRuntimeApi().getConversationComposerDraft(projectId, taskId, draftId);
 }
 
 export function deleteConversationComposerDraft(projectId: string | null | undefined, taskId: string, draftId: string) {
@@ -613,6 +631,14 @@ export function saveDesktopPreferences(appearance: Parameters<ReturnType<typeof 
   return getRuntimeApi().saveDesktopPreferences(appearance, personalization, language, useLocalClaude, verboseLogging, browser);
 }
 
+export function saveInterfaceZoomPercent(percent: number) {
+  return getRuntimeApi().saveInterfaceZoomPercent(percent);
+}
+
+export function saveWorkflowGraphDirection(direction: Parameters<ReturnType<typeof getRuntimeApi>['saveWorkflowGraphDirection']>[0]) {
+  return getRuntimeApi().saveWorkflowGraphDirection(direction);
+}
+
 export function saveDesktopAvatar(input: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopAvatar']>[0]) {
   return getRuntimeApi().saveDesktopAvatar(input);
 }
@@ -641,8 +667,24 @@ export function saveDesktopWallpaperOpacity(colorScheme: ResolvedColorScheme, op
   return getRuntimeApi().saveDesktopWallpaperOpacity(colorScheme, opacityPercent);
 }
 
+export function saveDesktopWallpaperFit(colorScheme: ResolvedColorScheme, fit: import('./types').WallpaperFitPreference) {
+  return getRuntimeApi().saveDesktopWallpaperFit(colorScheme, fit);
+}
+
 export function restoreThemeDesktopWallpaper(colorScheme: ResolvedColorScheme) {
   return getRuntimeApi().restoreThemeDesktopWallpaper(colorScheme);
+}
+
+export function clearDesktopWallpaper(colorScheme: ResolvedColorScheme) {
+  return getRuntimeApi().clearDesktopWallpaper(colorScheme);
+}
+
+export function deleteRecentDesktopWallpaper(wallpaperId: string) {
+  return getRuntimeApi().deleteRecentDesktopWallpaper(wallpaperId);
+}
+
+export function selectThemeDesktopWallpaper(colorScheme: ResolvedColorScheme, assetId: string) {
+  return getRuntimeApi().selectThemeDesktopWallpaper(colorScheme, assetId);
 }
 
 export function saveUpdaterSettings(overrideUrl: string | null) {
@@ -769,8 +811,15 @@ export function getConversationTaskPage(projectId: string, cursor?: string | nul
   return getRuntimeApi().getConversationTaskPage(projectId, cursor, limit);
 }
 
+export function getConversationTaskSummary(projectId: string, taskId: string, taskUuid?: string | null) {
+  return getRuntimeApi().getConversationTaskSummary(projectId, taskId, taskUuid);
+}
+
 export function getConversationPinnedTaskPage(cursor?: string | null, limit?: number) {
   return getRuntimeApi().getConversationPinnedTaskPage(cursor, limit);
+}
+export function getConversationRecentTaskPage(cursor?: string | null, limit?: number) {
+  return getRuntimeApi().getConversationRecentTaskPage(cursor, limit);
 }
 
 export function getConversationRunSummaryPage(projectId: string, taskId: string, cursor?: string | null, limit?: number) {

@@ -59,6 +59,27 @@ const resource: ConversationAssetWorkspaceResource = {
 };
 
 describe('conversation asset workspace panel', () => {
+  it('reads a source-bound artifact and ignores the previous artifact response after switching', async () => {
+    let resolveOld!: (content: { title: string; kind: string; content: string; metadata: object }) => void;
+    api.showArtifact.mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }));
+    api.showArtifact.mockResolvedValueOnce({ title: 'report.md', kind: 'artifact', content: 'New source', metadata: {} });
+    const artifact: ConversationAssetWorkspaceResource = {
+      ...resource, key: 'artifact:old', assetKind: 'artifact', name: 'report.md',
+      locator: { ...resource.locator, outerNodeId: 'dynamic-node', outerAttemptId: 'dynamic-attempt' },
+    };
+    const container = document.createElement('div'); document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<ConversationAssetWorkspacePanel resource={artifact} />));
+      expect(container.textContent).toContain(i18n.t('turnFiles.loading'));
+      expect(api.showArtifact).toHaveBeenCalledWith('project-1', 'task-1', 'run-1', 'round-1', 'node-1', 'attempt-1', 'report.md', 'dynamic-node', 'dynamic-attempt');
+      await act(async () => root.render(<ConversationAssetWorkspacePanel resource={{ ...artifact, key: 'artifact:new', locator: { ...artifact.locator, attemptId: 'attempt-2' } }} />));
+      expect(container.textContent).toContain('New source');
+      await act(async () => resolveOld({ title: 'report.md', kind: 'artifact', content: 'Old source', metadata: {} }));
+      expect(container.textContent).toContain('New source');
+      expect(container.textContent).not.toContain('Old source');
+    } finally { await act(async () => root.unmount()); }
+  });
   afterEach(() => {
     vi.clearAllMocks();
     document.body.replaceChildren();

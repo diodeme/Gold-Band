@@ -2,6 +2,7 @@
 
 | 状态 | 概要 | 说明 | 方案链接 |
 |---|---|---|---|
+| 验收中 | 首次启动引导与默认模型 | 三步引导、健康 Agent 自动登记、模型选择、全部内置 slot 绑定与可恢复提交已实现；真实安装／供应商与跨平台发布矩阵待完成。 | `docs/gold-band/开发计划/新增流程/首次启动引导开发计划.md` |
 | 完成 | 新工作树 checkout 期间文件树完整收敛 | 文件树按已加载树判定结构变化，不再依赖随平台和批次合并变化的 watcher `kind`：未知路径即使报为 `modified` 也刷新其已加载父目录，已知路径仍只属于内容领域，未加载目录内的事件直接跳过。根目录列表单飞，进行中的对账或失效标记过期并在返回后重读，不被早于变化的列表覆盖。`FileExplorerStore` 接口测试固化。 | `docs/gold-band/产品设计文档/interaction/app/workspace-files.md` |
 | 完成 | 右侧工作区跟随会话工作树 | 会话 VM 以三态 `workLocation`（main / worktree / unavailable）取代 `worktreePath/worktreeBranch`；文件浏览、编辑、搜索、链接、系统打开、watch 与源码管理按会话工作位置取根，后端校验 linked worktree 归属并以 32 项有界缓存复核 `.git` 指针；worktree 被收回时 Tab 展示不可用状态与“浏览主工作区”，不静默回落项目根；prompt 文件引用和 `@` 菜单按会话 canonical 工作目录解析。Rust 与前端接口测试固化。 | `docs/gold-band/产品设计文档/interaction/app/workspace-files.md`; `docs/gold-band/产品设计文档/interaction/app/source-control.md`; `docs/gold-band/产品设计文档/interaction/app/conversational-runtime.md` |
 | 完成 | 七种桌面语言与系统语言初始化 | 界面、后端短文案、启动错误页和内置提示词扩展到简体中文、繁体中文、英文、日文、韩文、巴西葡萄牙语、西班牙语。CI/CD 角色正文只保留中英，缺语言降级到英文。Windows 安装包按系统界面语言选择，未匹配为英文。桌面端仅在 `desktopLanguage` 缺失时按同一映射表写入一次。快速会话模式名各语言保留 Direct 与 AUTO，工作流按界面语言翻译。 | `docs/gold-band/产品设计文档/interaction/app/settings.md`; `docs/gold-band/产品设计文档/interaction/app/conversational-home.md`; `docs/gold-band/开发计划/gold-band-mvp-plan.md` |

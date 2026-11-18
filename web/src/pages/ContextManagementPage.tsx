@@ -4,7 +4,7 @@ import { ArrowLeft, Check, ChevronsUpDown, CircleHelp, Edit, Eye, FolderOpen, Li
 import { useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 import {
-  createProfile, deleteProfile, getProfile, importProfilesFromFolder, updateProfile,
+  createProfile, deleteProfile, getProfile, importProfilesFromFiles, importProfilesFromFolder, updateProfile,
   listMcpServers, addMcpServer, updateMcpServer, deleteMcpServer,
   toggleMcpServer, checkMcpServerHealth, listMcpTools,
   listSkills, listProjectSkills, readSkill, writeSkill, deleteSkill, getSkillSyncStatus,
@@ -30,10 +30,9 @@ import { Button } from '@/components/ui/button';
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
-import { Pagination, PaginationContent, PaginationItem, PaginationLink } from '@/components/ui/pagination';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from '@/components/ui/sheet';
@@ -62,7 +61,6 @@ import { initialProfileImportState, profileImportReducer } from '@/lib/profile-i
 type ProfileSheetMode = 'view' | 'create' | 'edit';
 type ContextTab = 'profiles' | 'mcp' | 'skills';
 type ProfileListTab = 'built-in' | 'custom';
-const pageSizes = [6, 12, 24];
 
 interface ContextManagementPageProps {
   initialTab?: 'profiles' | 'mcp' | 'skills';
@@ -96,8 +94,6 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, in
   const [profileListTab, setProfileListTab] = useState<ProfileListTab>(readOnly ? 'built-in' : 'custom');
   const [builtInQuery, setBuiltInQuery] = useState('');
   const [customQuery, setCustomQuery] = useState('');
-  const [pageIndex, setPageIndex] = useState(0);
-  const [pageSize, setPageSize] = useState(6);
   const [sheetMode, setSheetMode] = useState<ProfileSheetMode | null>(null);
   const [selectedProfile, setSelectedProfile] = useState<ProfileVm | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ProfileVm | null>(null);
@@ -389,13 +385,6 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, in
       return profileSearchText(profile).includes(normalizedQuery);
     });
   }, [profiles, customQuery]);
-  const pageCount = Math.max(1, Math.ceil(customProfiles.length / pageSize));
-  const safePageIndex = Math.min(pageIndex, pageCount - 1);
-  const pagedCustomProfiles = customProfiles.slice(safePageIndex * pageSize, safePageIndex * pageSize + pageSize);
-
-  useEffect(() => {
-    if (safePageIndex !== pageIndex) setPageIndex(safePageIndex);
-  }, [pageIndex, safePageIndex]);
 
   const openSheet = (mode: ProfileSheetMode, profile?: ProfileVm) => {
     setSheetMode(mode);
@@ -486,6 +475,28 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, in
     }
   };
 
+  const handlePickImportFiles = async () => {
+    dispatchProfileImport({ type: 'begin-import' });
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const selected = await open({
+        multiple: true,
+        filters: [{ name: 'Markdown', extensions: ['md'] }],
+        title: t('contextManagement.importPickFilesTitle'),
+      });
+      if (!selected) {
+        dispatchProfileImport({ type: 'cancel-import' });
+        return;
+      }
+      const filePaths = Array.isArray(selected) ? selected : [selected];
+      const result = await importProfilesFromFiles(filePaths, profileImport.dynamicTemplate);
+      dispatchProfileImport({ type: 'import-succeeded', result });
+      await refresh();
+    } catch (err) {
+      dispatchProfileImport({ type: 'import-failed', error: displayAppError(t, err) });
+    }
+  };
+
   const editImportedProfile = async (id: string) => {
     dispatchProfileImport({ type: 'begin-edit' });
     try {
@@ -504,7 +515,6 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, in
       return;
     }
     setCustomQuery(value);
-    setPageIndex(0);
   };
 
   return (
@@ -559,22 +569,6 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, in
             </>
           }
           error={error}
-          footer={
-            profileListTab === 'custom' && customProfiles.length > 0 ? (
-              <div className="flex flex-wrap items-center justify-between gap-3 border-t px-4 py-3 text-sm text-muted-foreground">
-                <span>{t('contextManagement.customProfilesPageRange', {
-                  start: customProfiles.length ? safePageIndex * pageSize + 1 : 0,
-                  end: Math.min(customProfiles.length, (safePageIndex + 1) * pageSize),
-                  total: customProfiles.length,
-                })}</span>
-                <div className="flex items-center gap-2">
-                  <span>{t('common.pageSize')}</span>
-                  <PageSizePicker value={pageSize} onChange={(value) => { setPageSize(value); setPageIndex(0); }} />
-                  <ProfilePagination pageIndex={safePageIndex} pageCount={pageCount} onPageChange={setPageIndex} />
-                </div>
-              </div>
-            ) : null
-          }
         >
           {loading && !vm ? <EmptyState>{t('common.loading')}</EmptyState> : null}
           {vm && profileListTab === 'built-in' ? (
@@ -594,7 +588,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, in
           {vm && profileListTab === 'custom' ? (
             <div ref={measuredProfileListRef} className="@container/profile-list">
               <div className="grid gap-3 p-4 @2xl/profile-list:grid-cols-2 @6xl/profile-list:grid-cols-3">
-                {pagedCustomProfiles.map((profile) => (
+                {customProfiles.map((profile) => (
                   <CustomProfileCard
                     key={`${profile.scope}:${profile.id}`}
                     profile={profile}
@@ -711,10 +705,23 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, in
               </ScrollArea>
               <SheetFooter className="border-t px-5 py-4 sm:flex-row sm:justify-end">
                 <Button variant="outline" disabled={profileImport.importing} onClick={() => dispatchProfileImport({ type: 'close-settings' })}>{t('common.close')}</Button>
-                <Button disabled={profileImport.importing} onClick={() => void handlePickImportFolder()}>
-                  {profileImport.importing ? <Loader2 className="animate-spin" /> : <FolderOpen />}
-                  {profileImport.importing ? t('common.loading') : t('contextManagement.importPickFolder')}
-                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button disabled={profileImport.importing}>
+                      {profileImport.importing ? <Loader2 className="animate-spin" /> : <FolderOpen />}
+                      {profileImport.importing ? t('common.loading') : t('contextManagement.importProfile')}
+                      <ChevronsUpDown className="size-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => void handlePickImportFiles()}>
+                      <FolderOpen />{t('contextManagement.importPickFiles')}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => void handlePickImportFolder()}>
+                      <FolderOpen />{t('contextManagement.importPickFolder')}
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </SheetFooter>
             </>
           )}
@@ -1698,79 +1705,6 @@ function ProfileMeta({ label, value }: { label: string; value: string }) {
       <p className="text-xs text-muted-foreground">{label}</p>
       <p className="truncate font-medium">{value}</p>
     </div>
-  );
-}
-
-function PageSizePicker({ value, onChange }: { value: number; onChange: (value: number) => void }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button variant="outline" className="w-20 justify-between px-3 font-normal">
-          {value}
-          <ChevronsUpDown className="size-4 opacity-50" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent side="top" align="end" sideOffset={8} className="w-20 p-1">
-        <div className="grid gap-1">
-          {pageSizes.map((item) => (
-            <Button
-              key={item}
-              type="button"
-              variant="ghost"
-              className="justify-between px-2 font-normal"
-              onClick={() => { onChange(item); setOpen(false); }}
-            >
-              {item}
-              <Check className={cn('size-4', item === value ? 'opacity-100' : 'opacity-0')} />
-            </Button>
-          ))}
-        </div>
-      </PopoverContent>
-    </Popover>
-  );
-}
-
-function ProfilePagination({ pageIndex, pageCount, onPageChange }: { pageIndex: number; pageCount: number; onPageChange: (value: number) => void }) {
-  const { t } = useTranslation();
-  const previousDisabled = pageIndex === 0;
-  const nextDisabled = pageIndex >= pageCount - 1;
-  return (
-    <Pagination className="w-auto">
-      <PaginationContent>
-        <PaginationItem>
-          <PaginationLink
-            href="#"
-            size="default"
-            aria-disabled={previousDisabled}
-            className={cn('px-3', previousDisabled && 'pointer-events-none opacity-50')}
-            onClick={(event) => { event.preventDefault(); if (!previousDisabled) onPageChange(Math.max(0, pageIndex - 1)); }}
-          >
-            {t('common.previousPage')}
-          </PaginationLink>
-        </PaginationItem>
-        <PaginationItem>
-          <PaginationLink
-            href="#"
-            isActive
-            aria-label={`Page ${pageIndex + 1}`}
-          >
-            {pageIndex + 1}
-          </PaginationLink>
-        </PaginationItem>
-        <PaginationItem>
-          <PaginationLink
-            href="#"
-            size="default"
-            aria-disabled={nextDisabled}
-            className={cn('px-3', nextDisabled && 'pointer-events-none opacity-50')}
-            onClick={(event) => { event.preventDefault(); if (!nextDisabled) onPageChange(Math.min(pageCount - 1, pageIndex + 1)); }}
-          >
-            {t('common.nextPage')}
-          </PaginationLink>
-        </PaginationItem>
-      </PaginationContent>
-    </Pagination>
   );
 }
 

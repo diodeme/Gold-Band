@@ -969,7 +969,7 @@ fn task_prompt_input_with_workspace_file(root: &std::path::Path) -> TaskPromptIn
             },
         }],
         role: None,
-        workspace_files: vec![PromptWorkspaceFileRef {
+        workspace_files: vec![PromptWorkspaceFileRef::Workspace {
             project_id: runtime_context().project_id,
             relative_path: "src/lib.rs".to_string(),
         }],
@@ -984,6 +984,7 @@ fn every_new_requirement_render_carries_the_task_quotes_and_workspace_files() {
     req.workspace_file_roots = vec![PromptWorkspaceRoot {
         project_id: runtime_context().project_id,
         root: workspace.path().to_path_buf(),
+        paths: None,
     }];
 
     let prompt = render_prompt_bundle(&req).unwrap();

@@ -74,6 +74,9 @@ jobs:
       - name: Test collaboration skills and templates
         run: npm run test:collaboration-skills
 
+      - name: Test onboarding compatibility matrix
+        run: npm run test:onboarding-compatibility
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:

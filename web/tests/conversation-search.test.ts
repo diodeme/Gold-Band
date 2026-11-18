@@ -11,6 +11,7 @@ describe('conversation search navigation', () => {
       workspacePath: 'D:/workspace-a',
       workspaceName: 'Workspace A',
       taskId: 'task-001',
+      taskUuid: 'uuid-a',
       title: 'Searchable conversation',
       requirementPreview: 'find a file',
       matchPreview: 'find a file',
@@ -27,6 +28,7 @@ describe('conversation search navigation', () => {
       projectId: 'project-a',
       taskId: 'task-001',
       runId: 'run-003',
+      taskUuid: 'uuid-a',
     });
   });
 

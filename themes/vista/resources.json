@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 2,
+  "assets": [
+    {
+      "id": "vista-summit-dark",
+      "kind": "wallpaper",
+      "path": "assets/wallpapers/vista-summit-dark.webp",
+      "licenseId": "vista-inhouse",
+      "required": true
+    },
+    {
+      "id": "vista-inkwash-light",
+      "kind": "wallpaper",
+      "path": "assets/wallpapers/vista-inkwash-light.webp",
+      "licenseId": "vista-inhouse",
+      "required": true
+    }
+  ]
+}

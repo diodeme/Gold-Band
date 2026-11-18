@@ -3936,10 +3936,6 @@
     "v": "Your user roles are paginated here."
   },
   {
-    "p": "contextManagement.customProfilesPageRange",
-    "v": "Custom roles {{start}}-{{end}} / {{total}}"
-  },
-  {
     "p": "contextManagement.builtInReadonlyHint",
     "v": "Built-in roles cannot be saved directly. Save them as a new role instead."
   },

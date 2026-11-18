@@ -1883,6 +1883,14 @@ pub(crate) fn load_timeline_items_unlocked(path: &Utf8Path) -> Result<Vec<AcpUiE
     Ok(items)
 }
 
+/// Loads timeline items WITHOUT hydrating artifact blobs. Navigation-level
+/// projections (turn index) only need kind/id/seq/timestamp/content fields, so
+/// tool outputs and diffs stay on disk — this keeps the read proportional to
+/// the index, not to the heaviest artifacts in the session.
+pub fn load_timeline_items_without_hydration(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
+    with_jsonl_file_lock(path, || load_timeline_items_for_storage_unlocked(path))
+}
+
 pub(crate) fn load_timeline_items_for_storage_unlocked(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
     let Ok(file) = std::fs::File::open(path.as_std_path()) else {
         return Ok(Vec::new());
@@ -4302,8 +4310,228 @@ fn extract_status(value: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Dominant rail kind for one conversation turn in the turn navigation index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConversationTurnKind {
+    Prompt,
+    Tool,
+    Compaction,
+    Permission,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationTurnIndexEntry {
+    pub seq: u64,
+    pub timestamp: String,
+    pub kind: ConversationTurnKind,
+    pub prompt_preview: Option<String>,
+}
+
+pub const CONVERSATION_TURN_PREVIEW_CHARS: usize = 80;
+
+fn conversation_turn_kind_rank(kind: ConversationTurnKind) -> u8 {
+    match kind {
+        ConversationTurnKind::Prompt => 0,
+        ConversationTurnKind::Tool => 1,
+        ConversationTurnKind::Compaction => 2,
+        ConversationTurnKind::Permission => 3,
+    }
+}
+
+fn truncate_chars(value: &str, limit: usize) -> String {
+    if value.chars().count() <= limit {
+        return value.to_string();
+    }
+    value.chars().take(limit).collect()
+}
+
+/// Durable timeline timestamps are Unix-second strings like "1794361750Z";
+/// the rail needs calendar dates, so normalize to RFC 3339 on the way out.
+/// Anything already ISO (or unrecognized) passes through untouched.
+pub(crate) fn normalize_timeline_timestamp(raw: &str) -> String {
+    let Some(digits) = raw.strip_suffix('Z') else {
+        return raw.to_string();
+    };
+    let Ok(secs) = digits.parse::<i64>() else {
+        return raw.to_string();
+    };
+    chrono::DateTime::from_timestamp(secs, 0)
+        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        .unwrap_or_else(|| raw.to_string())
+}
+
+/// Projects the durable timeline into a turn-level navigation index: one entry
+/// per user prompt, upgraded to the most rail-relevant event kind that lands
+/// inside the turn (permission > compaction > tool > prompt). Pure over loaded
+/// events so the command layer stays a thin IO shell; events are sorted by seq
+/// because branch merges can load out of order. Turn starts are the persisted
+/// user prompt items (`userTextDelta` with a `gold-band-user-prompt-*` id) —
+/// plain `userTextDelta` chunks and other user-driven events do not open turns.
+pub fn conversation_turn_index(events: &[AcpUiEvent]) -> Vec<ConversationTurnIndexEntry> {
+    conversation_turn_index_after(events, None)
+}
+
+/// Incremental variant: only returns entries for turns whose prompt seq is
+/// greater than `after_seq`, letting the rail merge new turns without
+/// re-reading the full projection each time.
+pub fn conversation_turn_index_after(
+    events: &[AcpUiEvent],
+    after_seq: Option<u64>,
+) -> Vec<ConversationTurnIndexEntry> {
+    let mut sorted: Vec<&AcpUiEvent> = events.iter().collect();
+    sorted.sort_by_key(|event| event.seq);
+    let mut index: Vec<ConversationTurnIndexEntry> = Vec::new();
+    for event in sorted {
+        let kind = event.kind.as_str();
+        if kind == "userTextDelta" && event.id.starts_with("gold-band-user-prompt-") {
+            if let Some(after) = after_seq {
+                if event.seq <= after {
+                    continue;
+                }
+            }
+            index.push(ConversationTurnIndexEntry {
+                seq: event.seq,
+                timestamp: normalize_timeline_timestamp(&event.timestamp),
+                kind: ConversationTurnKind::Prompt,
+                prompt_preview: event
+                    .content
+                    .as_deref()
+                    .map(|content| truncate_chars(content, CONVERSATION_TURN_PREVIEW_CHARS)),
+            });
+            continue;
+        }
+        let upgrade = if matches!(kind, "permissionRequest" | "permission") {
+            Some(ConversationTurnKind::Permission)
+        } else if kind.starts_with("compaction") {
+            Some(ConversationTurnKind::Compaction)
+        } else if kind == "toolCall" {
+            Some(ConversationTurnKind::Tool)
+        } else {
+            None
+        };
+        if let Some(new_kind) = upgrade {
+            if let Some(entry) = index.last_mut() {
+                if conversation_turn_kind_rank(new_kind) > conversation_turn_kind_rank(entry.kind) {
+                    entry.kind = new_kind;
+                }
+            }
+        }
+    }
+    index
+}
+
 #[cfg(test)]
 mod tests {
+    use super::{ConversationTurnKind, conversation_turn_index, conversation_turn_index_after};
+
+    #[test]
+    fn turn_index_after_returns_only_entries_beyond_the_cursor() {
+        let events = vec![
+            user_prompt(1, "第一问"),
+            ui_event(2, "toolCall", None),
+            user_prompt(4, "第二问"),
+            ui_event(5, "permissionRequest", None),
+            user_prompt(6, "第三问"),
+        ];
+        // Full projection is unchanged when no cursor is given.
+        assert_eq!(conversation_turn_index_after(&events, None).len(), 3);
+        // A cursor at the second prompt keeps only later turns.
+        let incremental = conversation_turn_index_after(&events, Some(4));
+        assert_eq!(incremental.len(), 1);
+        assert_eq!(incremental[0].seq, 6);
+        // A cursor at or past the newest prompt yields nothing new.
+        assert!(conversation_turn_index_after(&events, Some(6)).is_empty());
+        assert!(conversation_turn_index_after(&events, Some(99)).is_empty());
+    }
+
+    fn ui_event(seq: u64, kind: &str, content: Option<&str>) -> super::AcpUiEvent {
+        super::AcpUiEvent {
+            id: format!("{kind}-{seq}"),
+            seq,
+            timestamp: format!("2026-11-12T00:00:{seq:02}Z"),
+            kind: kind.to_string(),
+            session_id: Some("session".to_string()),
+            content: content.map(str::to_string),
+            title: None,
+            tool_call_id: None,
+            status: None,
+            started_seq: None,
+            ended_seq: None,
+            started_at: None,
+            ended_at: None,
+            timing: None,
+            raw: None,
+        }
+    }
+
+    /// Mirrors the persisted shape: prompt turns are `userTextDelta` items with
+    /// a `gold-band-user-prompt-*` id and a Unix-second timestamp.
+    fn user_prompt(seq: u64, content: &str) -> super::AcpUiEvent {
+        super::AcpUiEvent {
+            id: format!("gold-band-user-prompt-{seq}"),
+            seq,
+            timestamp: format!("{}Z", 1_794_361_750 + seq),
+            kind: "userTextDelta".to_string(),
+            session_id: Some("session".to_string()),
+            content: Some(content.to_string()),
+            title: None,
+            tool_call_id: None,
+            status: None,
+            started_seq: None,
+            ended_seq: None,
+            started_at: None,
+            ended_at: None,
+            timing: None,
+            raw: None,
+        }
+    }
+
+    #[test]
+    fn turn_index_projects_one_entry_per_prompt_with_dominant_kind() {
+        let events = vec![
+            user_prompt(1, "帮我排查登录 504"),
+            ui_event(2, "toolCall", None),
+            ui_event(3, "textDelta", None),
+            user_prompt(4, "再看看超时配置"),
+            ui_event(5, "permissionRequest", None),
+            user_prompt(6, "压缩一下上下文"),
+            ui_event(7, "compaction_update", None),
+            // Plain user text chunks never open turns.
+            ui_event(8, "userTextDelta", Some("不完整分块")),
+            // Out-of-order arrival still lands in seq order.
+            user_prompt(0, "第一问"),
+        ];
+        let index = conversation_turn_index(&events);
+        assert_eq!(index.len(), 4);
+        assert_eq!(index[0].seq, 0);
+        assert_eq!(index[0].kind, ConversationTurnKind::Prompt);
+        assert_eq!(index[1].seq, 1);
+        assert_eq!(index[1].kind, ConversationTurnKind::Tool);
+        assert_eq!(index[2].seq, 4);
+        assert_eq!(index[2].kind, ConversationTurnKind::Permission);
+        assert_eq!(index[3].seq, 6);
+        assert_eq!(index[3].kind, ConversationTurnKind::Compaction);
+        assert_eq!(index[1].prompt_preview.as_deref(), Some("帮我排查登录 504"));
+        // Unix-second timestamps are normalized to RFC 3339 for the rail.
+        assert_eq!(index[1].timestamp, "2026-11-11T01:49:11Z");
+    }
+
+    #[test]
+    fn turn_index_truncates_previews_to_the_char_budget() {
+        let long = "字".repeat(super::CONVERSATION_TURN_PREVIEW_CHARS + 10);
+        let index = conversation_turn_index(&[user_prompt(1, &long)]);
+        assert_eq!(
+            index[0]
+                .prompt_preview
+                .as_deref()
+                .map(str::chars)
+                .map(Iterator::count),
+            Some(super::CONVERSATION_TURN_PREVIEW_CHARS)
+        );
+    }
+
     use super::{
         AcpLatestTurnStatus, AcpLifecycleHeader, AcpLiveTurnActivity, AcpPromptSubmission,
         AcpSessionAvailability, AcpSessionMetadata, AcpTimingState, AcpTurnAdmission, AcpUiEvent,

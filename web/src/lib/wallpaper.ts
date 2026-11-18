@@ -22,6 +22,34 @@ export function selectedWallpaper(
   ) ?? null;
 }
 
+export interface ThemeWallpaperOption {
+  assetId: string;
+  url: string;
+}
+
+/**
+ * Selectable theme wallpapers for one color scheme: the distinct assets the
+ * theme assigns to that scheme's slots, in slot declaration order. Themes
+ * without the wallpapers capability yield an empty list.
+ */
+export function themeWallpaperOptions(
+  descriptors: Iterable<{ assetId: string; url: string } | undefined>,
+): ThemeWallpaperOption[] {
+  const seen = new Set<string>();
+  const options: ThemeWallpaperOption[] = [];
+  for (const descriptor of descriptors) {
+    if (!descriptor || seen.has(descriptor.assetId)) continue;
+    seen.add(descriptor.assetId);
+    options.push({ assetId: descriptor.assetId, url: descriptor.url });
+  }
+  return options;
+}
+
+/** The pinned theme wallpaper asset id, or null for the default assignment. */
+export function themeWallpaperPin(image: WallpaperImagePreference): string | null {
+  return image.source === 'theme' && image.assetId?.trim() ? image.assetId : null;
+}
+
 export function boundedRecentWallpapers(
   wallpapers: readonly WallpaperImageVm[],
   retainedAssetIds: readonly string[],

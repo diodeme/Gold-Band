@@ -391,6 +391,9 @@ fn emit_frontend_exit_request(
 }
 
 fn spawn_cleanup(app_handle: AppHandle) {
+    app_handle
+        .state::<crate::onboarding::SetupController>()
+        .cancel_all();
     tauri::async_runtime::spawn(async move {
         let cleanup =
             prepare_app_exit_inner(&app_handle, app_handle.state::<DesktopState>().inner());

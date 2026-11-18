@@ -12,6 +12,7 @@ mod builtin_mcp;
 mod channel;
 mod commands;
 mod commands_conversation;
+mod commands_file_references;
 mod conversation_attention;
 mod conversation_workspace;
 mod desktop_lifecycle;
@@ -26,6 +27,7 @@ mod metrics;
 mod multica;
 mod notifications;
 mod npx_cache;
+mod onboarding;
 mod personal_analytics;
 mod remote_image_trust;
 mod scheduled_runtime;
@@ -42,15 +44,17 @@ mod workspace_files;
 
 use anyhow::Context;
 use commands::{
-    add_mcp_server, cancel_git_operation, cancel_github_operation, cancel_multica_connect,
-    change_git_branch, check_local_claude, check_mcp_server_health, check_skill_name_conflict,
-    check_update_manual, choose_workspace, clear_desktop_avatar, connect_multica,
-    continue_conversation_runtime, continue_run, create_agent, create_profile, create_task,
-    delete_agent, delete_auto_template, delete_conversation_queued_prompt, delete_mcp_server,
-    delete_profile, delete_skill, delete_workflow_template, disconnect_multica, doctor_agent,
-    execute_git_mutation, fetch_agent_model_config, get_acp_activity_detail, get_acp_image,
-    get_acp_raw_frames, get_acp_session, get_acp_tool_detail, get_agent_binding_usage,
-    get_agent_command_catalog, get_agent_registry, get_app_bootstrap, get_auto_templates,
+    add_mcp_server, apply_desktop_zoom, cancel_git_operation, cancel_github_operation,
+    cancel_multica_connect, change_git_branch, check_local_claude, check_mcp_server_health,
+    check_skill_name_conflict, check_update_manual, choose_workspace, clear_desktop_avatar,
+    clear_desktop_wallpaper, connect_multica, continue_conversation_runtime, continue_run,
+    create_agent, create_profile, create_task, delete_agent, delete_auto_template,
+    delete_conversation_queued_prompt, delete_mcp_server, delete_profile,
+    delete_recent_desktop_wallpaper, delete_skill, delete_workflow_template, disconnect_multica,
+    doctor_agent, execute_git_mutation, fetch_agent_model_config, get_acp_activity_detail,
+    get_acp_image, get_acp_raw_frames, get_acp_session, get_acp_tool_detail,
+    get_agent_binding_usage, get_agent_command_catalog, get_agent_registry, get_app_bootstrap,
+    get_auto_templates, get_conversation_queued_prompt, get_conversation_turn_index,
     get_file_comparison, get_git_branch_picker_snapshot, get_git_capability, get_git_commit_detail,
     get_git_commit_reachability, get_git_commit_review, get_git_commit_review_statistics,
     get_git_comparison, get_git_history, get_git_operation, get_github_capability,
@@ -58,24 +62,26 @@ use commands::{
     get_metrics_settings, get_multica_settings, get_profile, get_profiles, get_round_detail,
     get_run_detail, get_skill_sync_status, get_source_control_snapshot, get_system_fonts,
     get_task_detail, get_task_list, get_turn_file_change_set, get_update_status, get_workflow,
-    get_workflow_templates, import_desktop_wallpaper, import_profiles_from_folder,
-    initialize_git_repository, list_conversation_directory, list_github_issues,
-    list_github_pull_requests, list_mcp_servers, list_mcp_tools, list_project_skills, list_skills,
-    mark_settings_advanced_update_seen, mark_settings_update_seen,
-    open_conversation_directory_path_in_file_manager, open_in_file_manager, pause_run,
-    preflight_github_pull_request, read_conversation_directory_file, read_skill, record_activity,
-    recover_conversation_runtime, remove_recent_workspace, renew_acp_session_lease,
+    get_workflow_templates, import_desktop_wallpaper, import_profiles_from_files,
+    import_profiles_from_folder, initialize_git_repository, list_conversation_directory,
+    list_github_issues, list_github_pull_requests, list_mcp_servers, list_mcp_tools,
+    list_project_skills, list_skills, mark_settings_advanced_update_seen,
+    mark_settings_update_seen, open_conversation_directory_path_in_file_manager,
+    open_in_file_manager, pause_run, preflight_github_pull_request,
+    read_conversation_directory_file, read_skill, record_activity, recover_conversation_runtime,
+    release_conversation_queued_prompt_edit, remove_recent_workspace, renew_acp_session_lease,
     reorder_conversation_queued_prompts, replace_auto_templates, report_frontend_error,
-    report_webview_environment, resolve_turn_attachment_file, respond_acp_permission,
-    respond_elicitation, restore_conversation_queued_prompt, restore_theme_desktop_wallpaper,
-    retry_run, save_auto_template, save_desktop_avatar, save_desktop_avatar_shape,
-    save_desktop_preferences, save_desktop_wallpaper_opacity, save_metrics_settings,
-    save_multica_connection_address, save_task_workflow, save_updater_settings,
+    report_webview_environment, rerun_failed_node, resolve_turn_attachment_file,
+    respond_acp_permission, respond_elicitation, restore_theme_desktop_wallpaper,
+    retry_current_node, save_auto_template, save_desktop_avatar, save_desktop_avatar_shape,
+    save_desktop_preferences, save_desktop_wallpaper_fit, save_desktop_wallpaper_opacity,
+    save_interface_zoom_percent, save_metrics_settings, save_multica_connection_address,
+    save_task_workflow, save_updater_settings, save_workflow_graph_direction,
     save_workflow_template, search_acp_prompts, search_acp_sessions, search_tasks,
     select_recent_desktop_avatar, select_recent_desktop_wallpaper, select_recent_workspace,
-    set_acp_session_auto_accept, set_acp_session_config_option, set_acp_session_model,
-    set_acp_session_permission_mode, show_artifact, show_attachment, show_worker_ref,
-    start_git_operation, start_git_state_monitor, start_github_login,
+    select_theme_desktop_wallpaper, set_acp_session_auto_accept, set_acp_session_config_option,
+    set_acp_session_model, set_acp_session_permission_mode, show_artifact, show_attachment,
+    show_worker_ref, start_git_operation, start_git_state_monitor, start_github_login,
     start_github_pull_request_create, start_run, start_update_install, stop_active_session,
     stop_git_state_monitor, submit_conversation_prompt, submit_manual_check, toggle_mcp_server,
     update_agent, update_auto_template, update_mcp_server, update_notification_attention,
@@ -86,9 +92,10 @@ use commands_conversation::{
     acknowledge_conversation_terminal_result, add_conversation_workspace,
     choose_conversation_workspace, create_conversation_run, create_scheduled_task,
     delete_conversation_task, delete_scheduled_execution_history, delete_scheduled_task,
-    get_conversation_execution_plan, get_conversation_pinned_task_page, get_conversation_run,
-    get_conversation_run_mode, get_conversation_run_summary_page,
-    get_conversation_sidebar_bootstrap, get_conversation_task_page, get_conversation_workspaces,
+    get_conversation_execution_plan, get_conversation_pinned_task_page,
+    get_conversation_recent_task_page, get_conversation_run, get_conversation_run_mode,
+    get_conversation_run_summary_page, get_conversation_sidebar_bootstrap,
+    get_conversation_task_page, get_conversation_task_summary, get_conversation_workspaces,
     get_scheduled_runtime_settings, get_scheduled_task, get_scheduled_task_diagnostics,
     list_scheduled_execution_history, list_scheduled_tasks, materialize_conversation_attachments,
     pin_conversation, preflight_conversation_execution_plan_save,
@@ -118,13 +125,164 @@ use tracing::{debug, info, warn};
 use updater::{retry_pending_startup_install, start_update_polling};
 use workspace_files::{WorkspaceFileRuntime, WorkspaceFileWatchRuntime};
 
+pub(crate) fn start_business_runtime(handle: tauri::AppHandle) {
+    use std::sync::atomic::Ordering;
+    let state = handle.state::<DesktopState>();
+    let Ok(context) = state.context() else {
+        return;
+    };
+    if matches!(
+        context.config.onboarding,
+        Some(gold_band::onboarding::model::OnboardingState::Pending { .. })
+    ) || state.business_runtime_started.swap(true, Ordering::AcqRel)
+    {
+        return;
+    }
+    if let Ok(runtime_app) = state.app() {
+        let im_handle = handle.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) = im_runtime::initialize_im_runtime_if_required(&im_handle).await {
+                warn!(error = %error, "IM runtime failed to initialize");
+            }
+        });
+        commands::register_lifecycle_subscribers(&runtime_app, &handle);
+        // home repo 自愈（单一 repo、有界）：远程来源 work_dir 定点自愈移入下方 spawn_blocking
+        // 恢复管线（P2），不再阻塞窗口启动关键路径。
+        let _ = runtime_app.recover_interrupted_running_sessions();
+    }
+    let recovery_handle = handle.clone();
+    tauri::async_runtime::spawn(async move {
+        let blocking_handle = recovery_handle.clone();
+        let recovery = tauri::async_runtime::spawn_blocking(move || {
+            let state = blocking_handle.state::<DesktopState>();
+            // 远程来源 work_dir 定点自愈先于 complete_startup_recovery：resume 判定等待的
+            // 启动门（wait_for_startup_accepting）打开即意味着本步已收敛（断点续跑根因修复：
+            // home 自愈够不到 task 自身 work_dir，残留 Running 会使 classify_resume 误落 Fresh）。
+            if let Ok(runtime_app) = state.app() {
+                recover_multica_work_dir_sessions(&runtime_app);
+            }
+            state.recover_interrupted_conversation_workspaces()
+        })
+        .await;
+        let report = match recovery {
+            Ok(Ok(report)) => Some(report),
+            Ok(Err(error)) => {
+                warn!(
+                    error = %error,
+                    "failed to read runtime recovery candidates"
+                );
+                None
+            }
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    "runtime recovery blocking task failed"
+                );
+                None
+            }
+        };
+        let Some(report) = report else {
+            let state = recovery_handle.state::<DesktopState>();
+            if let Err(error) = state.runtime_recovery().fail_startup_recovery() {
+                warn!(
+                    error = %error,
+                    "runtime recovery startup gate could not transition to failed"
+                );
+            }
+            return;
+        };
+
+        let blocked_project_ids = report
+            .blocked_project_ids
+            .iter()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+        let state = recovery_handle.state::<DesktopState>();
+        if let Err(error) = state
+            .runtime_recovery()
+            .complete_startup_recovery(blocked_project_ids.clone())
+        {
+            warn!(
+                error = %error,
+                "runtime recovery startup gate could not be completed"
+            );
+            return;
+        }
+        for recovered in &report.recovered_runs {
+            commands::emit_recovered_conversation_run_state(&recovery_handle, recovered);
+        }
+        if let Err(error) = scheduled_runtime::start(recovery_handle.clone(), &blocked_project_ids)
+        {
+            warn!(error = %error, "scheduled task scheduler failed to start");
+        }
+        info!(
+            workspace_count = report.workspace_count,
+            candidate_count = report.candidate_count,
+            recovered_run_count = report.recovered_run_count,
+            consumed_candidate_count = report.consumed_candidate_count,
+            blocked_workspace_count = report.blocked_project_ids.len(),
+            failure_count = report.failures.len(),
+            "conversation workspace startup recovery completed"
+        );
+        for failure in report.failures {
+            warn!(
+                workspace_path = %failure.workspace_path,
+                error_code = failure.code,
+                error = %failure.message,
+                "conversation workspace startup recovery failed"
+            );
+        }
+    });
+    // Initialize SQLite search index (best-effort; failures are non-fatal).
+    // On first run (empty DB), a background thread backfills existing tasks/sessions.
+    if let Ok(ctx) = state.context() {
+        let paths = gold_band::storage::GoldBandPaths::new(ctx.repo_root);
+        info!(
+            repo_root = %paths.repo_root,
+            project_id = %paths.project_id,
+            needs_workspace = ctx.needs_workspace,
+            "desktop runtime initialized"
+        );
+        builtin_mcp::inject_builtin_mcp_servers(&state);
+        let _ = init_search_index(&paths.sqlite_db_path(), &paths.projects_dir());
+    }
+    multica::start_multica_loop(handle.clone());
+    let _ = state.reevaluate_heartbeat_config();
+}
+
 fn main() {
     if let Err(error) = run() {
-        eprintln!(
-            "failed to start {} desktop: {error:?}",
-            channel::current_channel_config().app_name
+        let app_name = channel::current_channel_config().app_name;
+        let message = format!("failed to start {app_name} desktop: {error:?}");
+        eprintln!("{message}");
+        show_startup_failure(&app_name, &message);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn show_startup_failure(app_name: &str, message: &str) {
+    use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MessageBoxW};
+    use windows::core::PCWSTR;
+
+    let mut text: Vec<u16> = message.encode_utf16().collect();
+    text.push(0);
+    let mut title: Vec<u16> = app_name.encode_utf16().collect();
+    title.push(0);
+    // The Windows GUI subsystem has no console attached in release builds; this native
+    // dialog is the last visible boundary before process exit.
+    unsafe {
+        MessageBoxW(
+            None,
+            PCWSTR(text.as_ptr()),
+            PCWSTR(title.as_ptr()),
+            MB_ICONERROR,
         );
     }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn show_startup_failure(_app_name: &str, message: &str) {
+    eprintln!("{message}");
 }
 
 fn run() -> anyhow::Result<()> {
@@ -250,6 +408,7 @@ fn run() -> anyhow::Result<()> {
             },
         )
         .setup(|app| {
+            app.manage(onboarding::SetupController::default());
             #[cfg(target_os = "windows")]
             if let Some(window) = app.get_webview_window("main") {
                 window_chrome::ensure_undecorated_edge_resize(&window);
@@ -258,126 +417,26 @@ fn run() -> anyhow::Result<()> {
             let state = app.state::<DesktopState>();
             let _ = state.cleanup_agent_diagnostic_processes();
             if let Ok(ctx) = state.context() {
-                let paths = gold_band::storage::GoldBandPaths::new(ctx.repo_root);
+                let paths = gold_band::storage::GoldBandPaths::new(ctx.repo_root.clone());
                 touch_log_file_best_effort(&paths);
                 if let Some(runtime_log_guard) = init_tracing(&paths, &ctx.config, true) {
                     let _ = app.manage(runtime_log_guard);
                 }
+                // Apply the persisted interface zoom before the first paint so a
+                // zoomed session never starts at 100% and visibly jumps.
+                let zoom_percent = ctx
+                    .app()
+                    .load_settings()
+                    .ok()
+                    .and_then(|settings| settings.personalization)
+                    .map(|personalization| personalization.interface_zoom_percent)
+                    .unwrap_or(gold_band::config::DEFAULT_INTERFACE_ZOOM_PERCENT);
+                commands::apply_interface_zoom_to_app_webviews(app.handle(), zoom_percent);
             }
             state.install_scheduled_service(std::sync::Arc::new(
                 scheduled_service::ScheduledTaskService::desktop(app.handle().clone()),
             ))?;
-            if let Ok(runtime_app) = state.app() {
-                let im_handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    if let Err(error) =
-                        im_runtime::initialize_im_runtime_if_required(&im_handle).await
-                    {
-                        warn!(error = %error, "IM runtime failed to initialize");
-                    }
-                });
-                commands::register_lifecycle_subscribers(&runtime_app, app.handle());
-                // home repo 自愈（单一 repo、有界）：multica work_dir 定点自愈移入下方 spawn_blocking
-                // 恢复管线（P2），不再阻塞窗口启动关键路径。
-                let _ = runtime_app.recover_interrupted_running_sessions();
-            }
-            let recovery_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                let blocking_handle = recovery_handle.clone();
-                let recovery = tauri::async_runtime::spawn_blocking(move || {
-                    let state = blocking_handle.state::<DesktopState>();
-                    // multica work_dir 定点自愈先于 complete_startup_recovery：resume 判定等待的
-                    // 启动门（wait_for_startup_accepting）打开即意味着本步已收敛（断点续跑根因修复：
-                    // home 自愈够不到 task 自身 work_dir，残留 Running 会使 classify_resume 误落 Fresh）。
-                    if let Ok(runtime_app) = state.app() {
-                        recover_multica_work_dir_sessions(&runtime_app);
-                    }
-                    state.recover_interrupted_conversation_workspaces()
-                })
-                .await;
-                let report = match recovery {
-                    Ok(Ok(report)) => Some(report),
-                    Ok(Err(error)) => {
-                        warn!(
-                            error = %error,
-                            "failed to read runtime recovery candidates"
-                        );
-                        None
-                    }
-                    Err(error) => {
-                        warn!(
-                            error = %error,
-                            "runtime recovery blocking task failed"
-                        );
-                        None
-                    }
-                };
-                let Some(report) = report else {
-                    let state = recovery_handle.state::<DesktopState>();
-                    if let Err(error) = state.runtime_recovery().fail_startup_recovery() {
-                        warn!(
-                            error = %error,
-                            "runtime recovery startup gate could not transition to failed"
-                        );
-                    }
-                    return;
-                };
-
-                let blocked_project_ids = report
-                    .blocked_project_ids
-                    .iter()
-                    .cloned()
-                    .collect::<std::collections::HashSet<_>>();
-                let state = recovery_handle.state::<DesktopState>();
-                if let Err(error) = state
-                    .runtime_recovery()
-                    .complete_startup_recovery(blocked_project_ids.clone())
-                {
-                    warn!(
-                        error = %error,
-                        "runtime recovery startup gate could not be completed"
-                    );
-                    return;
-                }
-                for recovered in &report.recovered_runs {
-                    commands::emit_recovered_conversation_run_state(&recovery_handle, recovered);
-                }
-                if let Err(error) =
-                    scheduled_runtime::start(recovery_handle.clone(), &blocked_project_ids)
-                {
-                    warn!(error = %error, "scheduled task scheduler failed to start");
-                }
-                info!(
-                    workspace_count = report.workspace_count,
-                    candidate_count = report.candidate_count,
-                    recovered_run_count = report.recovered_run_count,
-                    consumed_candidate_count = report.consumed_candidate_count,
-                    blocked_workspace_count = report.blocked_project_ids.len(),
-                    failure_count = report.failures.len(),
-                    "conversation workspace startup recovery completed"
-                );
-                for failure in report.failures {
-                    warn!(
-                        workspace_path = %failure.workspace_path,
-                        error_code = failure.code,
-                        error = %failure.message,
-                        "conversation workspace startup recovery failed"
-                    );
-                }
-            });
-            // Initialize SQLite search index (best-effort; failures are non-fatal).
-            // On first run (empty DB), a background thread backfills existing tasks/sessions.
-            if let Ok(ctx) = state.context() {
-                let paths = gold_band::storage::GoldBandPaths::new(ctx.repo_root);
-                info!(
-                    repo_root = %paths.repo_root,
-                    project_id = %paths.project_id,
-                    needs_workspace = ctx.needs_workspace,
-                    "desktop runtime initialized"
-                );
-                builtin_mcp::inject_builtin_mcp_servers(&state);
-                let _ = init_search_index(&paths.sqlite_db_path(), &paths.projects_dir());
-            }
+            start_business_runtime(app.handle().clone());
             let handle = app.handle().clone();
             let command_handle = handle.clone();
             handle
@@ -416,310 +475,343 @@ fn run() -> anyhow::Result<()> {
             });
             retry_pending_startup_install(&app.handle().clone());
             start_update_polling(app.handle().clone());
-            multica::start_multica_loop(app.handle().clone());
-            let _ = app.state::<DesktopState>().reevaluate_heartbeat_config();
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            memory::read_project_memory,
-            memory::write_project_memory,
-            get_app_bootstrap,
-            im_runtime::get_im_settings,
-            im_runtime::start_wecom_scan_authorization,
-            im_runtime::complete_wecom_scan_authorization,
-            im_runtime::cancel_wecom_scan_authorization,
-            im_runtime::start_feishu_scan_authorization,
-            im_runtime::complete_feishu_scan_authorization,
-            im_runtime::cancel_feishu_scan_authorization,
-            im_runtime::set_im_channel_enabled,
-            im_runtime::save_im_notification_preferences,
-            im_runtime::reset_im_channel_binding,
-            im_runtime::reconnect_im_channel,
-            im_runtime::delete_im_channel,
-            desktop_lifecycle::complete_main_window_close,
-            desktop_lifecycle::resolve_app_exit,
-            notifications::take_pending_intervention_navigations,
-            copy_image_to_clipboard,
-            save_image_as,
-            acknowledge_conversation_terminal_result,
-            get_system_fonts,
-            check_local_claude,
-            get_agent_registry,
-            personal_analytics::get_personal_analytics,
-            personal_analytics::sync_personal_analytics,
-            personal_analytics::query_personal_analytics_report,
-            personal_analytics::start_personal_analytics_insights,
-            personal_analytics::cancel_personal_analytics_insights,
-            personal_analytics::cancel_personal_analytics,
-            get_agent_binding_usage,
-            get_agent_command_catalog,
-            create_agent,
-            update_agent,
-            delete_agent,
-            doctor_agent,
-            fetch_agent_model_config,
-            npx_cache::preview_agent_cache_repair,
-            npx_cache::repair_agent_cache,
-            remote_image_trust::trust_remote_image_hosts,
-            remote_image_trust::revoke_remote_image_host,
-            get_task_list,
-            get_profiles,
-            get_profile,
-            create_profile,
-            import_profiles_from_folder,
-            update_profile,
-            delete_profile,
-            choose_workspace,
-            select_recent_workspace,
-            remove_recent_workspace,
-            get_task_detail,
-            create_task,
-            save_task_workflow,
-            get_workflow,
-            get_workflow_templates,
-            save_workflow_template,
-            update_workflow_template,
-            delete_workflow_template,
-            get_auto_templates,
-            save_auto_template,
-            update_auto_template,
-            delete_auto_template,
-            replace_auto_templates,
-            get_run_detail,
-            get_round_detail,
-            get_log_page,
-            get_acp_session,
-            get_turn_file_change_set,
-            get_file_comparison,
-            resolve_turn_attachment_file,
-            get_acp_activity_detail,
-            get_acp_tool_detail,
-            commands::get_acp_compaction_summary,
-            get_acp_image,
-            commands::get_acp_activity_images,
-            renew_acp_session_lease,
-            submit_conversation_prompt,
-            reorder_conversation_queued_prompts,
-            restore_conversation_queued_prompt,
-            delete_conversation_queued_prompt,
-            use_conversation_queued_prompt,
-            commands::set_conversation_prompt_queue_mode,
-            commands::resume_conversation_prompt_queue,
-            commands::list_conversation_composer_drafts,
-            commands::save_conversation_composer_draft,
-            commands::take_conversation_composer_draft,
-            commands::delete_conversation_composer_draft,
-            commands::clear_conversation_queued_prompts,
-            set_acp_session_model,
-            set_acp_session_config_option,
-            set_acp_session_permission_mode,
-            set_acp_session_auto_accept,
-            respond_acp_permission,
-            respond_elicitation,
-            get_acp_raw_frames,
-            commands::list_composer_history,
-            commands::get_composer_history_text,
-            start_run,
-            get_git_capability,
-            commands::record_source_control_load,
-            commands::record_source_control_watch,
-            commands::bootstrap_source_control,
-            initialize_git_repository,
-            get_source_control_snapshot,
-            commands::get_source_control_overview,
-            commands::get_source_control_statistics,
-            commands::get_source_control_remotes,
-            get_git_branch_picker_snapshot,
-            change_git_branch,
-            get_git_history,
-            get_git_commit_detail,
-            get_git_commit_review,
-            get_git_commit_review_statistics,
-            get_git_commit_reachability,
-            execute_git_mutation,
-            get_git_comparison,
-            commands::prepare_git_push,
-            start_git_operation,
-            start_git_state_monitor,
-            stop_git_state_monitor,
-            get_git_operation,
-            cancel_git_operation,
-            get_github_capability,
-            start_github_login,
-            get_github_operation,
-            cancel_github_operation,
-            list_github_pull_requests,
-            get_github_pull_request,
-            preflight_github_pull_request,
-            start_github_pull_request_create,
-            list_github_issues,
-            get_github_issue,
-            continue_conversation_runtime,
-            recover_conversation_runtime,
-            continue_run,
-            pause_run,
-            stop_active_session,
-            submit_manual_check,
-            retry_run,
-            show_artifact,
-            show_attachment,
-            show_worker_ref,
-            save_desktop_preferences,
-            save_desktop_avatar,
-            select_recent_desktop_avatar,
-            save_desktop_avatar_shape,
-            clear_desktop_avatar,
-            import_desktop_wallpaper,
-            select_recent_desktop_wallpaper,
-            save_desktop_wallpaper_opacity,
-            restore_theme_desktop_wallpaper,
-            save_updater_settings,
-            get_metrics_settings,
-            update_notification_attention,
-            send_scheduled_native_notification,
-            save_metrics_settings,
-            get_multica_settings,
-            connect_multica,
-            disconnect_multica,
-            cancel_multica_connect,
-            save_multica_connection_address,
-            get_multica_tasks,
-            get_multica_task_requirement,
-            start_multica_conversation_run,
-            cancel_multica_task,
-            list_server_multica_workspaces,
-            add_multica_workspace,
-            remove_multica_workspace,
-            set_active_multica_workspace,
-            record_activity,
-            report_frontend_error,
-            report_webview_environment,
-            get_update_status,
-            mark_settings_update_seen,
-            mark_settings_advanced_update_seen,
-            check_update_manual,
-            start_update_install,
-            search_acp_prompts,
-            search_acp_sessions,
-            search_tasks,
-            // Conversation UI
-            save_desktop_ui_mode,
-            get_conversation_sidebar_bootstrap,
-            get_conversation_task_page,
-            get_conversation_pinned_task_page,
-            get_conversation_run_summary_page,
-            list_scheduled_tasks,
-            list_scheduled_execution_history,
-            delete_scheduled_execution_history,
-            get_scheduled_task_diagnostics,
-            get_scheduled_runtime_settings,
-            save_scheduled_runtime_settings,
-            commands_conversation::get_prompt_queue_settings,
-            commands_conversation::save_prompt_queue_settings,
-            run_scheduled_task_now,
-            create_scheduled_task,
-            get_scheduled_task,
-            update_scheduled_task,
-            delete_scheduled_task,
-            set_scheduled_task_enabled,
-            get_conversation_workspaces,
-            get_conversation_run,
-            validate_conversation_create,
-            create_conversation_run,
-            rerun_conversation_task,
-            stat_attachment_files,
-            materialize_conversation_attachments,
-            show_conversation_attachment,
-            show_conversation_message_attachment,
-            update_task_metadata,
-            delete_conversation_task,
-            pin_conversation,
-            set_conversation_resident,
-            unpin_conversation,
-            reorder_pinned_conversations,
-            search_conversation_tasks,
-            get_conversation_execution_plan,
-            get_conversation_run_mode,
-            preflight_conversation_execution_plan_save,
-            save_conversation_execution_plan,
-            recover_conversation_execution_plan_operation,
-            save_conversation_run_mode,
-            choose_conversation_workspace,
-            add_conversation_workspace,
-            remove_conversation_workspace,
-            sync_conversation_workspace,
-            save_conversation_preference,
-            save_last_conversation_workspace,
-            open_in_file_manager,
-            list_conversation_directory,
-            open_conversation_directory_path_in_file_manager,
-            read_conversation_directory_file,
-            workspace_files::list_workspace_directory,
-            workspace_files::open_workspace_path_in_file_manager,
-            workspace_files::open_file_with_system_app,
-            workspace_files::search_workspace_files,
-            workspace_files::resolve_workspace_file_link,
-            workspace_files::read_file_resource,
-            workspace_files::resolve_markdown_image,
-            workspace_files::write_file_resource,
-            workspace_files::create_workspace_entry,
-            workspace_files::rename_workspace_entry,
-            workspace_files::delete_workspace_entry,
-            workspace_files::restore_workspace_entry,
-            workspace_files::release_workspace_file_preview,
-            workspace_files::renew_external_file_access,
-            workspace_files::release_external_file_access,
-            workspace_files::start_workspace_file_watch,
-            workspace_files::stop_workspace_file_watch,
-            browser::browser_create_page,
-            browser::browser_resolve_local_html,
-            browser::browser_open_in_system_browser,
-            browser::browser_set_bounds,
-            browser::browser_show_page,
-            browser::browser_hide_page,
-            browser::browser_hide_all,
-            browser::browser_show_address_suggestions,
-            browser::browser_hide_address_suggestions,
-            browser::browser_address_suggestion_action,
-            browser::browser_address_suggestions_ready,
-            browser::browser_navigate,
-            browser::browser_allow_local_access,
-            browser::browser_go_back,
-            browser::browser_go_forward,
-            browser::browser_reload,
-            browser::browser_stop,
-            browser::browser_set_view_mode,
-            browser::browser_close_page,
-            browser::browser_discard_all,
-            browser_history::browser_list_history,
-            browser_bookmarks::browser_list_bookmarks,
-            browser_bookmarks::browser_add_bookmark,
-            browser_bookmarks::browser_remove_bookmark,
-            browser_bookmarks::browser_reorder_bookmarks,
-            browser_history::browser_delete_history,
-            // MCP & SKILL management
-            list_mcp_servers,
-            add_mcp_server,
-            update_mcp_server,
-            delete_mcp_server,
-            toggle_mcp_server,
-            check_mcp_server_health,
-            list_mcp_tools,
-            list_skills,
-            list_project_skills,
-            read_skill,
-            write_skill,
-            delete_skill,
-            update_skill_sync_targets,
-            get_skill_sync_status,
-            check_skill_name_conflict,
-            feedback::submit_feedback,
-            feedback::preview_feedback_session_archive,
-            #[cfg(all(debug_assertions, target_os = "windows"))]
-            webview_heap_diagnostics::get_webview_heap_diagnostic,
-        ])
+        .invoke_handler(desktop_invoke_handler)
         .build(tauri_context)
         .context("failed to build tauri runtime")?
         .run(desktop_lifecycle::handle_run_event);
     Ok(())
 }
+
+// Shared by the desktop runtime and native IPC regression tests.
+fn desktop_invoke_handler(invoke: tauri::ipc::Invoke) -> bool {
+    let handler: fn(tauri::ipc::Invoke) -> bool = tauri::generate_handler![
+        commands_file_references::resolve_right_workspace_file_target,
+        commands_file_references::reveal_right_workspace_file,
+        onboarding::get_onboarding_status,
+        onboarding::save_setup_preferences,
+        onboarding::check_setup_environment,
+        onboarding::cancel_setup_environment,
+        onboarding::skip_setup_git,
+        onboarding::defer_setup,
+        onboarding::start_setup_agent_detection,
+        onboarding::cancel_setup_detection,
+        onboarding::probe_setup_model,
+        onboarding::preview_default_setup,
+        onboarding::apply_default_setup,
+        memory::read_project_memory,
+        memory::write_project_memory,
+        get_app_bootstrap,
+        im_runtime::get_im_settings,
+        im_runtime::start_wecom_scan_authorization,
+        im_runtime::complete_wecom_scan_authorization,
+        im_runtime::cancel_wecom_scan_authorization,
+        im_runtime::start_feishu_scan_authorization,
+        im_runtime::complete_feishu_scan_authorization,
+        im_runtime::cancel_feishu_scan_authorization,
+        im_runtime::set_im_channel_enabled,
+        im_runtime::save_im_notification_preferences,
+        im_runtime::reset_im_channel_binding,
+        im_runtime::reconnect_im_channel,
+        im_runtime::delete_im_channel,
+        desktop_lifecycle::complete_main_window_close,
+        desktop_lifecycle::resolve_app_exit,
+        notifications::take_pending_intervention_navigations,
+        copy_image_to_clipboard,
+        save_image_as,
+        acknowledge_conversation_terminal_result,
+        get_system_fonts,
+        check_local_claude,
+        get_agent_registry,
+        personal_analytics::get_personal_analytics,
+        personal_analytics::sync_personal_analytics,
+        personal_analytics::query_personal_analytics_report,
+        personal_analytics::start_personal_analytics_insights,
+        personal_analytics::cancel_personal_analytics_insights,
+        personal_analytics::cancel_personal_analytics,
+        get_agent_binding_usage,
+        get_agent_command_catalog,
+        create_agent,
+        update_agent,
+        delete_agent,
+        doctor_agent,
+        fetch_agent_model_config,
+        npx_cache::preview_agent_cache_repair,
+        npx_cache::repair_agent_cache,
+        remote_image_trust::trust_remote_image_hosts,
+        remote_image_trust::revoke_remote_image_host,
+        get_task_list,
+        get_profiles,
+        get_profile,
+        create_profile,
+        import_profiles_from_folder,
+        import_profiles_from_files,
+        update_profile,
+        delete_profile,
+        choose_workspace,
+        select_recent_workspace,
+        remove_recent_workspace,
+        get_task_detail,
+        create_task,
+        save_task_workflow,
+        get_workflow,
+        get_workflow_templates,
+        save_workflow_template,
+        update_workflow_template,
+        delete_workflow_template,
+        get_auto_templates,
+        save_auto_template,
+        update_auto_template,
+        delete_auto_template,
+        replace_auto_templates,
+        get_run_detail,
+        get_round_detail,
+        get_log_page,
+        get_acp_session,
+        get_conversation_turn_index,
+        get_turn_file_change_set,
+        get_file_comparison,
+        resolve_turn_attachment_file,
+        get_acp_activity_detail,
+        get_acp_tool_detail,
+        commands::get_acp_compaction_summary,
+        get_acp_image,
+        commands::get_acp_activity_images,
+        renew_acp_session_lease,
+        submit_conversation_prompt,
+        reorder_conversation_queued_prompts,
+        get_conversation_queued_prompt,
+        release_conversation_queued_prompt_edit,
+        delete_conversation_queued_prompt,
+        use_conversation_queued_prompt,
+        commands::set_conversation_prompt_queue_mode,
+        commands::resume_conversation_prompt_queue,
+        commands::list_conversation_composer_drafts,
+        commands::save_conversation_composer_draft,
+        commands::get_conversation_composer_draft,
+        commands::delete_conversation_composer_draft,
+        commands::clear_conversation_queued_prompts,
+        set_acp_session_model,
+        set_acp_session_config_option,
+        set_acp_session_permission_mode,
+        set_acp_session_auto_accept,
+        respond_acp_permission,
+        respond_elicitation,
+        get_acp_raw_frames,
+        commands::list_composer_history,
+        commands::get_composer_history_text,
+        start_run,
+        get_git_capability,
+        commands::record_source_control_load,
+        commands::record_source_control_watch,
+        commands::bootstrap_source_control,
+        initialize_git_repository,
+        get_source_control_snapshot,
+        commands::get_source_control_overview,
+        commands::get_source_control_statistics,
+        commands::get_source_control_remotes,
+        get_git_branch_picker_snapshot,
+        change_git_branch,
+        get_git_history,
+        get_git_commit_detail,
+        get_git_commit_review,
+        get_git_commit_review_statistics,
+        get_git_commit_reachability,
+        execute_git_mutation,
+        get_git_comparison,
+        commands::prepare_git_push,
+        start_git_operation,
+        start_git_state_monitor,
+        stop_git_state_monitor,
+        get_git_operation,
+        cancel_git_operation,
+        get_github_capability,
+        start_github_login,
+        get_github_operation,
+        cancel_github_operation,
+        list_github_pull_requests,
+        get_github_pull_request,
+        preflight_github_pull_request,
+        start_github_pull_request_create,
+        list_github_issues,
+        get_github_issue,
+        continue_conversation_runtime,
+        recover_conversation_runtime,
+        continue_run,
+        pause_run,
+        stop_active_session,
+        submit_manual_check,
+        retry_current_node,
+        rerun_failed_node,
+        show_artifact,
+        show_attachment,
+        show_worker_ref,
+        apply_desktop_zoom,
+        save_interface_zoom_percent,
+        save_workflow_graph_direction,
+        save_desktop_preferences,
+        save_desktop_avatar,
+        select_recent_desktop_avatar,
+        save_desktop_avatar_shape,
+        clear_desktop_avatar,
+        import_desktop_wallpaper,
+        select_recent_desktop_wallpaper,
+        save_desktop_wallpaper_opacity,
+        save_desktop_wallpaper_fit,
+        restore_theme_desktop_wallpaper,
+        clear_desktop_wallpaper,
+        delete_recent_desktop_wallpaper,
+        select_theme_desktop_wallpaper,
+        save_updater_settings,
+        get_metrics_settings,
+        update_notification_attention,
+        send_scheduled_native_notification,
+        save_metrics_settings,
+        get_multica_settings,
+        connect_multica,
+        disconnect_multica,
+        cancel_multica_connect,
+        save_multica_connection_address,
+        get_multica_tasks,
+        get_multica_task_requirement,
+        start_multica_conversation_run,
+        cancel_multica_task,
+        list_server_multica_workspaces,
+        add_multica_workspace,
+        remove_multica_workspace,
+        set_active_multica_workspace,
+        record_activity,
+        report_frontend_error,
+        report_webview_environment,
+        get_update_status,
+        mark_settings_update_seen,
+        mark_settings_advanced_update_seen,
+        check_update_manual,
+        start_update_install,
+        search_acp_prompts,
+        search_acp_sessions,
+        search_tasks,
+        // Conversation UI
+        save_desktop_ui_mode,
+        get_conversation_sidebar_bootstrap,
+        get_conversation_task_page,
+        get_conversation_task_summary,
+        get_conversation_pinned_task_page,
+        get_conversation_recent_task_page,
+        get_conversation_run_summary_page,
+        list_scheduled_tasks,
+        list_scheduled_execution_history,
+        delete_scheduled_execution_history,
+        get_scheduled_task_diagnostics,
+        get_scheduled_runtime_settings,
+        save_scheduled_runtime_settings,
+        commands_conversation::get_prompt_queue_settings,
+        commands_conversation::save_prompt_queue_settings,
+        run_scheduled_task_now,
+        create_scheduled_task,
+        get_scheduled_task,
+        update_scheduled_task,
+        delete_scheduled_task,
+        set_scheduled_task_enabled,
+        get_conversation_workspaces,
+        get_conversation_run,
+        validate_conversation_create,
+        create_conversation_run,
+        rerun_conversation_task,
+        stat_attachment_files,
+        materialize_conversation_attachments,
+        show_conversation_attachment,
+        show_conversation_message_attachment,
+        update_task_metadata,
+        delete_conversation_task,
+        pin_conversation,
+        set_conversation_resident,
+        unpin_conversation,
+        reorder_pinned_conversations,
+        search_conversation_tasks,
+        get_conversation_execution_plan,
+        get_conversation_run_mode,
+        preflight_conversation_execution_plan_save,
+        save_conversation_execution_plan,
+        recover_conversation_execution_plan_operation,
+        save_conversation_run_mode,
+        choose_conversation_workspace,
+        add_conversation_workspace,
+        remove_conversation_workspace,
+        sync_conversation_workspace,
+        save_conversation_preference,
+        save_last_conversation_workspace,
+        open_in_file_manager,
+        list_conversation_directory,
+        open_conversation_directory_path_in_file_manager,
+        read_conversation_directory_file,
+        workspace_files::list_workspace_directory,
+        workspace_files::open_workspace_path_in_file_manager,
+        workspace_files::open_file_with_system_app,
+        workspace_files::search_workspace_files,
+        workspace_files::resolve_workspace_file_link,
+        workspace_files::read_file_resource,
+        workspace_files::resolve_markdown_image,
+        workspace_files::write_file_resource,
+        workspace_files::create_workspace_entry,
+        workspace_files::rename_workspace_entry,
+        workspace_files::delete_workspace_entry,
+        workspace_files::restore_workspace_entry,
+        workspace_files::release_workspace_file_preview,
+        workspace_files::renew_external_file_access,
+        workspace_files::release_external_file_access,
+        workspace_files::start_workspace_file_watch,
+        workspace_files::stop_workspace_file_watch,
+        browser::browser_create_page,
+        browser::browser_resolve_local_html,
+        browser::browser_open_in_system_browser,
+        browser::browser_set_bounds,
+        browser::browser_show_page,
+        browser::browser_hide_page,
+        browser::browser_hide_all,
+        browser::browser_show_address_suggestions,
+        browser::browser_hide_address_suggestions,
+        browser::browser_address_suggestion_action,
+        browser::browser_address_suggestions_ready,
+        browser::browser_navigate,
+        browser::browser_allow_local_access,
+        browser::browser_go_back,
+        browser::browser_go_forward,
+        browser::browser_reload,
+        browser::browser_stop,
+        browser::browser_set_view_mode,
+        browser::browser_close_page,
+        browser::browser_discard_all,
+        browser_history::browser_list_history,
+        browser_bookmarks::browser_list_bookmarks,
+        browser_bookmarks::browser_add_bookmark,
+        browser_bookmarks::browser_remove_bookmark,
+        browser_bookmarks::browser_reorder_bookmarks,
+        browser_history::browser_delete_history,
+        // MCP & SKILL management
+        list_mcp_servers,
+        add_mcp_server,
+        update_mcp_server,
+        delete_mcp_server,
+        toggle_mcp_server,
+        check_mcp_server_health,
+        list_mcp_tools,
+        list_skills,
+        list_project_skills,
+        read_skill,
+        write_skill,
+        delete_skill,
+        update_skill_sync_targets,
+        get_skill_sync_status,
+        check_skill_name_conflict,
+        feedback::submit_feedback,
+        feedback::preview_feedback_session_archive,
+        #[cfg(all(debug_assertions, target_os = "windows"))]
+        webview_heap_diagnostics::get_webview_heap_diagnostic,
+    ];
+    handler(invoke)
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod ipc_stack_tests;

@@ -1,12 +1,15 @@
-import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentInsightOperationVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAttemptLifecycleVm, ConversationAutoConfigVm, ConversationComposerDraftBoxVm, ConversationQueuedPromptDraftVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, ImChannelKind, ImChannelSnapshotVm, ImNotificationPreferencesVm, ImSettingsVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, McpServerVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, PromptQueueSettingsVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
+import { TURN_RAIL_PAGE_SIZE } from '@/lib/conversation-turn-index';
+import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentInsightOperationVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAttemptLifecycleVm, ConversationAutoConfigVm, ConversationComposerDraftBoxVm, ConversationQueuedPromptDraftVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationTurnIndexEntryVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, ImChannelKind, ImChannelSnapshotVm, ImNotificationPreferencesVm, ImSettingsVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, McpServerVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, PromptQueueSettingsVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
 import { mockAgentRegistry, mockBootstrap, mockContent, mockErrorBlockedConversationRun, mockErrorBlockedConversationSession, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
 import type { AcpSessionUpdatedEventVm, ImageActionInput, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import type { GitCommitVm, GitHubOperationVm, GitOperationVm, ImChannelCapabilitiesVm } from '../types';
 import { browserPreviewState } from './browserState';
+import { clampInterfaceZoomPercent } from '@/lib/desktop-zoom';
 import { localTimestamp, toRoundSelectionInput } from './shared';
 import { scheduledScheduleSpecFromInput } from '@/lib/scheduled-task-authoring';
 import { normalizeFontCatalogFamilies } from '@/lib/font-families';
 import { boundedRecentWallpapers } from '@/lib/wallpaper';
+import { builtinThemes } from '@/themes/builtin-themes';
 import { readBrowserMemory, writeBrowserMemory } from './browserMemory';
 
 const browserFontCandidates = [
@@ -719,7 +722,6 @@ function browserCompletedConversationSession(): AcpSessionVm {
 function browserCompletedConversationRun(): ConversationRunVm {
   const run = structuredClone(mockErrorBlockedConversationRun);
   run.runId = 'run-052';
-  run.taskUuid = 'browser-mock-task-uuid';
   run.runMode = 'direct';
   run.directConfig = { agentType: 'claude-acp' };
   run.agentIdentity = browserAgentIdentity('claude-acp');
@@ -774,6 +776,58 @@ const browserPausedWorkflowLocator = {
   roundId: 'round-001', nodeId: 'dev', attemptId: 'attempt-001', branchId: 'root',
 } as const;
 const browserPausedWorkflowTiming = { startMs: 300, completeMs: 5_000 };
+let browserFailedWorkflow: ConversationRunVm | null = null;
+
+function browserFailedWorkflowFixture(): ConversationRunVm {
+  if (browserFailedWorkflow) return browserFailedWorkflow;
+  const run = structuredClone(browserPausedWorkflowFixture().run);
+  run.runId = 'run-056';
+  run.runStatus = 'completed';
+  run.runOutcome = 'failure';
+  run.pauseReason = null;
+  run.resumable = false;
+  run.runtimeError = null;
+  run.runtimeErrorMessage = null;
+  const display = { code: 'failure', tone: 'danger', icon: 'x', terminal: true, resumable: false, blockingError: false } as const;
+  const round = run.sessionTree.rounds[0];
+  const node = round.nodes[0];
+  const first = node.attempts[0];
+  first.status = 'completed';
+  first.outcome = 'failure';
+  first.current = false;
+  first.runtimeDisplay = display;
+  first.sessionId = 'browser-session-056-attempt-001';
+  if (first.lifecycle) {
+    first.lifecycle.runtime = { ...first.lifecycle.runtime, status: 'completed', outcome: 'failure', pauseReason: null, resumable: false, continuable: false, current: false, active: false, phase: 'terminal' };
+    first.lifecycle.displayStatus = 'failure';
+    first.lifecycle.runtimeDisplay = display;
+    first.lifecycle.continueKind = null;
+    first.lifecycle.acp = { ...first.lifecycle.acp, liveTurnActivity: 'idle', latestTurnStatus: 'completed', turnError: null, stopReason: 'end_turn' };
+    first.lifecycle.composer = { ...first.lifecycle.composer, lockInput: false, canStop: false };
+  }
+  const second = structuredClone(first);
+  second.attemptId = 'attempt-002';
+  second.pathLabel = `${second.nodeId}/${second.attemptId}`;
+  second.current = true;
+  second.sessionId = 'browser-session-056-attempt-002';
+  if (second.lifecycle) second.lifecycle.runtime.current = true;
+  node.attempts.push(second);
+  node.status = round.status = 'completed';
+  node.runtimeDisplay = round.runtimeDisplay = display;
+  const graph = run.workflowGraph.nodes[0];
+  graph.status = 'completed';
+  graph.outcome = 'failure';
+  graph.attemptId = second.attemptId;
+  graph.runtimeDisplay = display;
+  graph.retryable = true;
+  graph.attempts = node.attempts.map((attempt, index) => ({
+    attemptId: attempt.attemptId, sequence: index + 1, status: attempt.status, outcome: attempt.outcome,
+    runtimeDisplay: display, current: attempt.current, retryable: true,
+  }));
+  run.sessionTree.selectedSessionKey = `${second.roundId}/${second.nodeId}/${second.attemptId}`;
+  browserFailedWorkflow = run;
+  return run;
+}
 const browserAcpSessionListeners = new Set<(event: AcpSessionUpdatedEventVm) => void>();
 let browserPausedWorkflow: { run: ConversationRunVm; session: AcpSessionVm } | null = null;
 
@@ -781,7 +835,6 @@ function browserPausedWorkflowFixture() {
   if (browserPausedWorkflow) return browserPausedWorkflow;
   const run = structuredClone(mockErrorBlockedConversationRun);
   run.runId = browserPausedWorkflowLocator.runId;
-  run.taskUuid = 'browser-mock-task-uuid';
   run.pauseReason = 'runtime-abnormal';
   run.resumable = true;
   run.runtimeError = {
@@ -810,6 +863,9 @@ function browserPausedWorkflowFixture() {
   lifecycle.composer = { mode: 'normal', submitTarget: 'acp-prompt', processingKind: 'responding', canStop: false, lockInput: false };
   round.runtimeDisplay = node.runtimeDisplay = attempt.runtimeDisplay = lifecycle.runtimeDisplay;
   run.workflowGraph.nodes[0].runtimeDisplay = lifecycle.runtimeDisplay;
+  run.workflowGraph.nodes[0].roundId = browserPausedWorkflowLocator.roundId;
+  run.workflowGraph.nodes[0].nodeId = browserPausedWorkflowLocator.nodeId;
+  run.workflowGraph.nodes[0].retryable = true;
   attempt.sessionId = 'browser-session-054';
   attempt.sessionEstablished = true;
   const session: AcpSessionVm = {
@@ -926,7 +982,7 @@ const browserQueuedPromptDrafts = [
     content: '把关键设计决策同步到产品文档。',
     quotes: [],
     attachmentPaths: [],
-    workspaceFiles: [{ projectId: 'default', relativePath: 'docs/design.md' }],
+    workspaceFiles: [{ kind: 'workspace' as const, projectId: 'default', relativePath: 'docs/design.md' }],
     createdAt: '2026-08-07T08:00:02Z',
   },
   {
@@ -955,27 +1011,30 @@ let browserQueuedPromptRevision = 5;
 /// Browser-demo composer drafts per conversation task, mirroring the desktop
 /// box: newest first, capped, never dispatched.
 const BROWSER_COMPOSER_DRAFT_LIMIT = 20;
+const BROWSER_COMPOSER_DRAFT_PREVIEW_CHARS = 280;
 const browserComposerDrafts = new Map<string, { revision: number; items: (ConversationQueuedPromptDraftVm & { id: string; createdAt: string })[] }>();
 let browserComposerDraftSequence = 0;
 let browserPromptQueueSettings: PromptQueueSettingsVm = { confirmInterrupt: true };
 
-function browserComposerDraftBox(taskId: string) {
-  let box = browserComposerDrafts.get(taskId);
+function browserComposerDraftBox(projectId: string | null | undefined, taskId: string) {
+  const key = JSON.stringify([projectId ?? 'default', taskId]);
+  let box = browserComposerDrafts.get(key);
   if (!box) {
     box = { revision: 0, items: [] };
-    browserComposerDrafts.set(taskId, box);
+    browserComposerDrafts.set(key, box);
   }
   return box;
 }
 
-function browserComposerDraftBoxVm(taskId: string): ConversationComposerDraftBoxVm {
-  const box = browserComposerDraftBox(taskId);
+function browserComposerDraftBoxVm(projectId: string | null | undefined, taskId: string): ConversationComposerDraftBoxVm {
+  const box = browserComposerDraftBox(projectId, taskId);
   return {
     revision: box.revision,
     maxItems: BROWSER_COMPOSER_DRAFT_LIMIT,
     items: box.items.map((draft) => ({
       id: draft.id,
-      content: draft.content,
+      contentPreview: Array.from(draft.content.slice(0, BROWSER_COMPOSER_DRAFT_PREVIEW_CHARS * 2))
+        .slice(0, BROWSER_COMPOSER_DRAFT_PREVIEW_CHARS).join(''),
       attachmentCount: draft.attachmentPaths.length,
       quoteCount: draft.quotes.length,
       workspaceFileCount: draft.workspaceFiles?.length ?? 0,
@@ -1033,12 +1092,15 @@ function browserQueuedConversationRun(): ConversationRunVm {
         dispatchMode: browserQueuedPromptQueueMode,
         autoDispatchSuspended: browserQueuedPromptSuspended,
         suspensionReason: browserQueuedPromptSuspended ? 'stopped' : null,
+        storageError: false,
         items: [
           ...browserQueuedPromptDrafts
             .filter((item) => browserRemovedQueuedPromptIds.indexOf(item.id) < 0)
             .map((item) => ({
               id: item.id,
-              content: item.content,
+              state: 'queued' as const,
+              contentPreview: Array.from(item.content.slice(0, BROWSER_COMPOSER_DRAFT_PREVIEW_CHARS * 2))
+                .slice(0, BROWSER_COMPOSER_DRAFT_PREVIEW_CHARS).join(''),
               attachmentCount: item.attachmentPaths.length,
               quoteCount: item.quotes.length,
               workspaceFileCount: item.workspaceFiles?.length ?? 0,
@@ -1318,6 +1380,8 @@ function browserExecutionPlan(projectId: string, taskId: string, taskUuid: strin
 }
 
 export const browserApi: RuntimeApi = {
+  resolveRightWorkspaceFileTarget: async () => { throw { code: 'conversation.workspace-file-project-unavailable', params: {} }; },
+  revealRightWorkspaceFile: async () => { throw { code: 'conversation.workspace-file-project-unavailable', params: {} }; },
   reportSourceControlLoad: async () => {},
   reportSourceControlWatch: async () => {},
   readProjectMemory: readBrowserMemory,
@@ -2034,6 +2098,9 @@ export const browserApi: RuntimeApi = {
   importProfilesFromFolder(_folderPath: string, _dynamicTemplate: boolean) {
     return Promise.resolve({ totalScanned: 0, imported: [], failed: [], truncated: false });
   },
+  importProfilesFromFiles(_filePaths: string[], _dynamicTemplate: boolean) {
+    return Promise.resolve({ totalScanned: 0, imported: [], failed: [], truncated: false });
+  },
   updateProfile(id: string, input: ProfileInput) {
     const existing = browserPreviewState.getProfiles().profiles.find((profile) => profile.id === id);
     if (!existing) return browserCommandError('app.unexpected');
@@ -2282,13 +2349,216 @@ export const browserApi: RuntimeApi = {
   submitManualCheck(_projectId, taskId, runId, _roundId, _nodeId, _attemptId, _outcome) {
     return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId });
   },
-  retryRun(taskId: string, runId: string) {
-    return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId });
+  retryCurrentNode(request: import('../types').RetryCurrentNodeRequest) {
+    if (request.expectedAttemptId === 'attempt-stale') {
+      return Promise.reject({
+        code: 'workflow.retry.stale-locator',
+        params: {
+          taskId: request.taskId,
+          runId: request.runId,
+          currentRoundId: request.expectedRoundId,
+          currentNodeId: request.expectedNodeId,
+          currentAttemptId: 'attempt-001',
+        },
+      });
+    }
+    if (request.runId === 'run-055') {
+      return Promise.reject(new Error('workflow.retry.manual-check-pending'));
+    }
+    if (request.runId === 'run-051') {
+      return Promise.reject(new Error('workflow.retry.error-blocked'));
+    }
+    if (request.runId === 'run-052') {
+      return Promise.reject(new Error('workflow.retry.run-terminal'));
+    }
+    if (request.runId === 'run-053') {
+      return Promise.reject(new Error('workflow.retry.run-active'));
+    }
+    const nextAttemptNumber = Number.parseInt(request.expectedAttemptId.replace(/^attempt-/, ''), 10) + 1;
+    const nextAttemptId = `attempt-${String(Number.isFinite(nextAttemptNumber) ? nextAttemptNumber : 2).padStart(3, '0')}`;
+    if (
+      request.projectId === browserPausedWorkflowLocator.projectId
+      && request.taskId === browserPausedWorkflowLocator.taskId
+      && request.runId === browserPausedWorkflowLocator.runId
+    ) {
+      const { run } = browserPausedWorkflowFixture();
+      run.runStatus = 'running';
+      run.pauseReason = null;
+      run.runtimeError = null;
+      run.runtimeErrorMessage = null;
+      run.resumable = false;
+      run.workflowGraph.nodes[0].attemptId = nextAttemptId;
+      run.workflowGraph.nodes[0].retryable = false;
+      run.workflowGraph.nodes[0].runtimeDisplay = {
+        ...run.workflowGraph.nodes[0].runtimeDisplay,
+        code: 'running',
+        tone: 'running',
+        icon: 'dot',
+        terminal: false,
+        resumable: false,
+        reasonCode: null,
+        blockingError: false,
+      };
+    }
+    return Promise.resolve({
+      operationId: 'browser-retry-current-node',
+      locator: {
+        projectId: request.projectId,
+        taskId: request.taskId,
+        runId: request.runId,
+        roundId: request.expectedRoundId,
+        nodeId: request.expectedNodeId,
+        attemptId: nextAttemptId,
+      },
+      run: {
+        ...mockRunDetail.run,
+        taskId: request.taskId,
+        id: request.runId,
+        status: 'running',
+        currentRound: request.expectedRoundId,
+        currentNode: request.expectedNodeId,
+        currentAttempt: nextAttemptId,
+      },
+    });
+  },
+  rerunFailedNode(request: import('../types').RetryCurrentNodeRequest) {
+    if (request.runId === 'run-051') return Promise.reject({ code: 'workflow.retry.error-blocked', params: {} });
+    const source = browserFailedWorkflowFixture();
+    if (request.projectId !== source.projectId || request.taskId !== source.taskId || request.runId !== source.runId) {
+      return Promise.reject({ code: 'workflow.retry.stale-locator', params: {} });
+    }
+    const runId = `run-rerun-056-${request.expectedAttemptId}`;
+    const operationId = `browser-rerun-056-${request.expectedAttemptId}`;
+    const attemptId = `attempt-${String(Number.parseInt(request.expectedAttemptId.slice(8), 10) + 1).padStart(3, '0')}`;
+    if (browserConversationRuns.has(runId)) {
+      return Promise.resolve({
+        operationId,
+        locator: { projectId: request.projectId, taskId: request.taskId, runId, roundId: request.expectedRoundId, nodeId: request.expectedNodeId, attemptId },
+        run: { ...mockRunDetail.run, id: runId, taskId: request.taskId, status: 'running', outcome: null, currentRound: request.expectedRoundId, currentNode: request.expectedNodeId, currentAttempt: attemptId },
+      });
+    }
+    const graphNode = source.workflowGraph.nodes.find((node) => node.nodeId === request.expectedNodeId && node.roundId === request.expectedRoundId);
+    const anchor = graphNode?.attempts?.find((attempt) => attempt.attemptId === request.expectedAttemptId && attempt.retryable);
+    if (!anchor) {
+      return Promise.reject({ code: 'workflow.retry.stale-locator', params: {} });
+    }
+    {
+      source.sealed = true;
+      source.rerunSuccessorRunId = runId;
+      source.workflowGraph.nodes[0].retryable = false;
+      source.workflowGraph.nodes[0].attempts = source.workflowGraph.nodes[0].attempts?.map((attempt) => ({
+        ...attempt,
+        retryable: false,
+      }));
+      const target = structuredClone(source);
+      target.runId = runId;
+      target.sealed = false;
+      target.runStatus = 'running';
+      target.runOutcome = null;
+      target.rerunOrigin = {
+        sourceRunId: source.runId, sourceRoundId: request.expectedRoundId, sourceRoundIndex: 1,
+        sourceNodeId: request.expectedNodeId, sourceAttemptId: request.expectedAttemptId,
+        operationId, inheritedTraceSequence: anchor.sequence ?? 1, sourceAuthoringRevision: 1,
+      };
+      const round = target.sessionTree.rounds[0];
+      const node = round.nodes[0];
+      const anchorIndex = node.attempts.findIndex((attempt) => attempt.attemptId === request.expectedAttemptId);
+      node.attempts = node.attempts.slice(0, anchorIndex + 1).map((attempt) => ({ ...attempt, current: false, inherited: true, sessionEstablished: false, sessionId: null }));
+      const current = { ...structuredClone(node.attempts[anchorIndex]), attemptId, pathLabel: `${node.nodeId}/${attemptId}`, inherited: false, current: true, status: 'running', outcome: null, sessionEstablished: true, sessionId: 'browser-rerun-session' };
+      const running = { ...current.runtimeDisplay, code: 'running', tone: 'running' as const, icon: 'dot' as const, terminal: false };
+      current.runtimeDisplay = running;
+      if (current.lifecycle) {
+        current.lifecycle.runtime = { ...current.lifecycle.runtime, status: 'running', outcome: null, current: true, active: true, phase: 'executing-node' };
+        current.lifecycle.control = { mode: 'runtime-controlled' };
+        current.lifecycle.acp = { sessionAvailability: 'established', liveTurnActivity: 'running', latestTurnStatus: 'none', stopping: false };
+        current.lifecycle.displayStatus = 'running';
+        current.lifecycle.runtimeDisplay = running;
+        current.lifecycle.composer = { ...current.lifecycle.composer, mode: 'submitting', lockInput: true, canStop: true };
+      }
+      node.attempts.push(current);
+      target.activeSessions = [current];
+      round.status = node.status = 'running';
+      round.runtimeDisplay = node.runtimeDisplay = running;
+      const targetGraph = target.workflowGraph.nodes[0];
+      targetGraph.status = 'running';
+      targetGraph.outcome = null;
+      targetGraph.attemptId = attemptId;
+      targetGraph.retryable = false;
+      targetGraph.runtimeDisplay = running;
+      targetGraph.attempts = [
+        ...(graphNode?.attempts ?? []).slice(0, anchorIndex + 1).map((attempt) => ({
+          ...attempt,
+          current: false,
+          retryable: false,
+        })),
+        { attemptId, status: 'running', runtimeDisplay: running, current: true, retryable: false },
+      ];
+      target.sessionTree.selectedSessionKey = `${current.roundId}/${current.nodeId}/${attemptId}`;
+      browserConversationRuns.set(runId, target);
+    }
+    return Promise.resolve({
+      operationId,
+      locator: { projectId: request.projectId, taskId: request.taskId, runId, roundId: request.expectedRoundId, nodeId: request.expectedNodeId, attemptId },
+      run: { ...mockRunDetail.run, id: runId, taskId: request.taskId, status: 'running', outcome: null, currentRound: request.expectedRoundId, currentNode: request.expectedNodeId, currentAttempt: attemptId },
+    });
   },
   getLogPage(query: LogQueryInput) {
     return Promise.resolve(mockLogPage(query));
   },
+  getConversationTurnIndex(_projectId?: string | null, _taskId?: string, _runId?: string, _roundId?: string, _nodeId?: string, _attemptId?: string, _branchId?: string | null, afterSeq?: number | null, _outerNodeId?: string | null, _outerAttemptId?: string | null, beforeSeq?: number | null): Promise<ConversationTurnIndexEntryVm[]> {
+    // Browser preview has no durable timeline; a long synthetic session (~90
+    // turns across several chapters and days) exercises the rail's grouping,
+    // coloring, centering growth and internal scroll affordances.
+    const kinds: ConversationTurnIndexEntryVm['kind'][] = [
+      'prompt', 'prompt', 'tool', 'prompt', 'tool', 'permission', 'prompt',
+      'tool', 'prompt', 'compaction', 'prompt', 'tool', 'prompt', 'permission', 'prompt',
+    ];
+    const topics = [
+      '梳理项目目录结构', '跑一下构建并贴出报错', '登录 504 排查思路整理',
+      '重构数据导入模块', '补充单元测试覆盖', '修复时间解析的边界问题',
+      '性能基线记录与对比', '更新接口文档', '排查 CI 偶发超时',
+      '压缩后继续验证导入', '整理发布清单', '评审 Diff 并留备注',
+    ];
+    const total = 92;
+    const entries: ConversationTurnIndexEntryVm[] = [];
+    for (let index = 0; index < total; index += 1) {
+      const seq = index + 1;
+      if (afterSeq != null && seq <= afterSeq) continue;
+      if (beforeSeq != null && seq >= beforeSeq) continue;
+      const dayOffset = Math.floor(index / 34);
+      const hour = 9 + (index % 8);
+      const timestamp = new Date(Date.UTC(2026, 10, 9 + dayOffset, hour, index * 7 % 60, 0)).toISOString();
+      const kind = index === 0 ? 'prompt' : kinds[index % kinds.length];
+      entries.push({
+        seq,
+        timestamp,
+        kind,
+        promptPreview: kind === 'prompt'
+          ? `第 ${seq} 轮：${topics[index % topics.length]}`
+          : null,
+      });
+    }
+    return Promise.resolve(afterSeq != null ? entries.slice(0, TURN_RAIL_PAGE_SIZE) : entries.slice(-TURN_RAIL_PAGE_SIZE));
+  },
   getAcpSession(_projectId, _taskId, runId, _roundId, _nodeId, _attemptId, query, fallback, _outerNodeId, _outerAttemptId) {
+    const rerunPreview = runId === 'run-056' ? browserFailedWorkflowFixture() : browserConversationRuns.get(runId);
+    if (_projectId === 'default' && _taskId === 'mock-task' && rerunPreview
+      && (runId === 'run-056' || rerunPreview.rerunOrigin) && !_outerNodeId && !_outerAttemptId) {
+      const leaf = rerunPreview.sessionTree.rounds.find((round) => round.roundId === _roundId)
+        ?.nodes.find((node) => node.nodeId === _nodeId)?.attempts.find((attempt) => attempt.attemptId === _attemptId);
+      if (leaf?.sessionId && !leaf.inherited) {
+        const session = structuredClone(browserPausedWorkflowFixture().session);
+        session.sessionId = leaf.sessionId;
+        session.attemptId = leaf.attemptId;
+        session.status = leaf.status === 'running' ? 'running' : 'completed';
+        session.stopReason = leaf.status === 'running' ? null : 'end_turn';
+        session.turnError = null;
+        session.events = [{ id: `${leaf.sessionId}-result`, seq: 1, timestamp: '2026-11-12T00:00:00Z', kind: 'textDelta', content: leaf.status === 'running' ? '正在重新执行节点。' : '节点执行结束，结果为失败。', raw: {} }];
+        session.eventPage = { loadedCount: 1, total: 1, oldestSeq: 1, newestSeq: 1, hasOlder: false, hasNewer: false };
+        session.diagnostics = { ...session.diagnostics, eventCount: 1, errorCount: 0, lastError: null, lastErrorTimestamp: null };
+        return Promise.resolve(session);
+      }
+    }
     if (isBrowserPausedWorkflowSession(_projectId, _taskId, runId, _roundId, _nodeId, _attemptId, _outerNodeId, _outerAttemptId)
       && (!query?.branchId || query.branchId === browserPausedWorkflowLocator.branchId)) {
       return Promise.resolve(structuredClone(browserPausedWorkflowFixture().session));
@@ -2424,9 +2694,11 @@ export const browserApi: RuntimeApi = {
   reorderConversationQueuedPrompts(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _expectedRevision, _orderedItemIds, _outerNodeId, _outerAttemptId) {
     return Promise.resolve({ lifecycle: null });
   },
-  restoreConversationQueuedPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, itemId, _outerNodeId, _outerAttemptId) {
+  getConversationQueuedPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, itemId, _outerNodeId, _outerAttemptId) {
     const item = browserQueuedPromptDrafts.find((candidate) => candidate.id === itemId);
-    if (!item) return Promise.reject(new Error('queued prompt not found'));
+    if (!item || browserRemovedQueuedPromptIds.indexOf(itemId) >= 0) {
+      return Promise.reject({ code: 'conversation.prompt-queue-item-not-found', params: {} });
+    }
     return Promise.resolve({
       draft: {
         content: item.content,
@@ -2437,6 +2709,9 @@ export const browserApi: RuntimeApi = {
       },
       lifecycle: null,
     });
+  },
+  releaseConversationQueuedPromptEdit(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _itemId, _outerNodeId, _outerAttemptId) {
+    return Promise.resolve({ lifecycle: browserQueuedPromptQueueLifecycle() });
   },
   deleteConversationQueuedPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, itemId, _outerNodeId, _outerAttemptId) {
     const index = browserRemovedQueuedPromptIds.indexOf(itemId);
@@ -2465,11 +2740,11 @@ export const browserApi: RuntimeApi = {
     browserQueuedPromptRevision += 1;
     return Promise.resolve({ lifecycle: browserQueuedPromptQueueLifecycle() });
   },
-  listConversationComposerDrafts(_projectId, taskId) {
-    return Promise.resolve(browserComposerDraftBoxVm(taskId));
+  listConversationComposerDrafts(projectId, taskId) {
+    return Promise.resolve(browserComposerDraftBoxVm(projectId, taskId));
   },
-  saveConversationComposerDraft(_projectId, taskId, input, attachmentPaths) {
-    const box = browserComposerDraftBox(taskId);
+  saveConversationComposerDraft(projectId, taskId, input, attachmentPaths) {
+    const box = browserComposerDraftBox(projectId, taskId);
     if (box.items.length >= BROWSER_COMPOSER_DRAFT_LIMIT) {
       return Promise.reject({ code: 'conversation.composer-draft-full', params: { max: BROWSER_COMPOSER_DRAFT_LIMIT } });
     }
@@ -2484,24 +2759,23 @@ export const browserApi: RuntimeApi = {
       createdAt: new Date().toISOString(),
     });
     box.revision += 1;
-    return Promise.resolve(browserComposerDraftBoxVm(taskId));
+    return Promise.resolve(browserComposerDraftBoxVm(projectId, taskId));
   },
-  takeConversationComposerDraft(_projectId, taskId, draftId) {
-    const box = browserComposerDraftBox(taskId);
+  getConversationComposerDraft(projectId, taskId, draftId) {
+    const box = browserComposerDraftBox(projectId, taskId);
     const index = box.items.findIndex((draft) => draft.id === draftId);
     if (index < 0) return Promise.reject({ code: 'conversation.composer-draft-not-found', params: {} });
-    const [{ id: _id, createdAt: _createdAt, ...draft }] = box.items.splice(index, 1);
-    box.revision += 1;
-    return Promise.resolve({ draft, drafts: browserComposerDraftBoxVm(taskId) });
+    const { id: _id, createdAt: _createdAt, ...draft } = box.items[index];
+    return Promise.resolve({ draft: structuredClone(draft), drafts: browserComposerDraftBoxVm(projectId, taskId) });
   },
-  deleteConversationComposerDraft(_projectId, taskId, draftId) {
-    const box = browserComposerDraftBox(taskId);
+  deleteConversationComposerDraft(projectId, taskId, draftId) {
+    const box = browserComposerDraftBox(projectId, taskId);
     const index = box.items.findIndex((draft) => draft.id === draftId);
     if (index >= 0) {
       box.items.splice(index, 1);
       box.revision += 1;
     }
-    return Promise.resolve(browserComposerDraftBoxVm(taskId));
+    return Promise.resolve(browserComposerDraftBoxVm(projectId, taskId));
   },
   getPromptQueueSettings() {
     return Promise.resolve({ ...browserPromptQueueSettings });
@@ -2593,7 +2867,51 @@ export const browserApi: RuntimeApi = {
   },
   saveDesktopPreferences(appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean, browser) {
     const current = browserPreviewState.getPreferences();
-    const preferences = browserPreviewState.setPreferences({ ...current, appearance, personalization, language, useLocalClaude, verboseLogging, browser });
+    let effective = personalization;
+    if (current.appearance.themeId !== appearance.themeId) {
+      const collapsed = structuredClone(personalization);
+      const byScheme = collapsed.wallpaper.byColorScheme;
+      // Theme pins never cross themes; themes without declared wallpapers
+      // cannot hold the theme source at all. Capability comes from the theme
+      // manifest, so every wallpaper-capable builtin (gold-band, meadow,
+      // vista) keeps its pin instead of collapsing to none.
+      const targetTheme = builtinThemes.find((theme) => theme.id === appearance.themeId);
+      const themeHasWallpapers = (scheme: 'light' | 'dark') =>
+        Boolean(targetTheme?.wallpapers?.[scheme]
+          && Object.keys(targetTheme.wallpapers[scheme]!).length > 0);
+      for (const scheme of ['light', 'dark'] as const) {
+        if (byScheme[scheme].image.source === 'theme') {
+          byScheme[scheme].image = themeHasWallpapers(scheme)
+            ? { source: 'theme' }
+            : { source: 'none' };
+        }
+      }
+      effective = collapsed;
+    }
+    const preferences = browserPreviewState.setPreferences({ ...current, appearance, personalization: effective, language, useLocalClaude, verboseLogging, browser });
+    return Promise.resolve(preferences);
+  },
+  applyDesktopZoom(percent: number) {
+    // Browser preview has no webview zoom; echo the clamped value back.
+    return Promise.resolve(clampInterfaceZoomPercent(percent));
+  },
+  saveInterfaceZoomPercent(percent: number) {
+    // Browser preview has no webview zoom; record the percent on the preview
+    // preferences instead.
+    const current = browserPreviewState.getPreferences();
+    const preferences = browserPreviewState.setPreferences({
+      ...current,
+      personalization: { ...current.personalization, interfaceZoomPercent: clampInterfaceZoomPercent(percent) },
+    });
+    return Promise.resolve(preferences);
+  },
+  saveWorkflowGraphDirection(direction: import('../types').WorkflowGraphDirectionPreference) {
+    // Browser preview records the direction on the preview preferences.
+    const current = browserPreviewState.getPreferences();
+    const preferences = browserPreviewState.setPreferences({
+      ...current,
+      personalization: { ...current.personalization, workflowGraphDirection: direction },
+    });
     return Promise.resolve(preferences);
   },
   saveDesktopAvatar(input) {
@@ -2758,6 +3076,23 @@ export const browserApi: RuntimeApi = {
     };
     return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization }));
   },
+  saveDesktopWallpaperFit(colorScheme, fit) {
+    const current = browserPreviewState.getPreferences();
+    const personalization = {
+      ...current.personalization,
+      wallpaper: {
+        ...current.personalization.wallpaper,
+        byColorScheme: {
+          ...current.personalization.wallpaper.byColorScheme,
+          [colorScheme]: {
+            ...current.personalization.wallpaper.byColorScheme[colorScheme],
+            fit,
+          },
+        },
+      },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization }));
+  },
   restoreThemeDesktopWallpaper(colorScheme) {
     const current = browserPreviewState.getPreferences();
     const personalization = {
@@ -2769,6 +3104,64 @@ export const browserApi: RuntimeApi = {
           [colorScheme]: {
             ...current.personalization.wallpaper.byColorScheme[colorScheme],
             image: { source: 'theme' as const },
+          },
+        },
+      },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization }));
+  },
+  clearDesktopWallpaper(colorScheme) {
+    const current = browserPreviewState.getPreferences();
+    const personalization = {
+      ...current.personalization,
+      wallpaper: {
+        ...current.personalization.wallpaper,
+        byColorScheme: {
+          ...current.personalization.wallpaper.byColorScheme,
+          [colorScheme]: {
+            ...current.personalization.wallpaper.byColorScheme[colorScheme],
+            image: { source: 'none' as const },
+          },
+        },
+      },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization }));
+  },
+  deleteRecentDesktopWallpaper(wallpaperId) {
+    const current = browserPreviewState.getPreferences();
+    const target = current.wallpapers.recentWallpapers.find((wallpaper) => wallpaper.id === wallpaperId);
+    if (!target) return Promise.reject({ code: 'wallpaper.recent-not-found', params: { wallpaperId } });
+    const wallpapers = {
+      recentWallpapers: current.wallpapers.recentWallpapers.filter((wallpaper) => wallpaper.id !== wallpaperId),
+    };
+    const byColorScheme = { ...current.personalization.wallpaper.byColorScheme };
+    for (const scheme of ['light', 'dark'] as const) {
+      const image = byColorScheme[scheme].image;
+      if (image.source === 'user' && image.assetId === wallpaperId) {
+        byColorScheme[scheme] = { ...byColorScheme[scheme], image: { source: 'theme' as const } };
+      }
+    }
+    const personalization = {
+      ...current.personalization,
+      wallpaper: { ...current.personalization.wallpaper, byColorScheme },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization, wallpapers }));
+  },
+  selectThemeDesktopWallpaper(colorScheme, assetId) {
+    const current = browserPreviewState.getPreferences();
+    const trimmed = assetId.trim();
+    if (!trimmed) {
+      return Promise.reject({ code: 'personalization.wallpaper-invalid', params: { assetId } });
+    }
+    const personalization = {
+      ...current.personalization,
+      wallpaper: {
+        ...current.personalization.wallpaper,
+        byColorScheme: {
+          ...current.personalization.wallpaper.byColorScheme,
+          [colorScheme]: {
+            ...current.personalization.wallpaper.byColorScheme[colorScheme],
+            image: { source: 'theme' as const, assetId: trimmed },
           },
         },
       },
@@ -2938,7 +3331,7 @@ export const browserApi: RuntimeApi = {
       preferences: {},
     });
   },
-  getConversationTaskPage(projectId, cursor, limit = 24) {
+  getConversationTaskPage(projectId, cursor, limit = 7) {
     const previewTask: ConversationTaskRowVm = {
       projectId: 'default',
       taskId: 'mock-task',
@@ -2963,7 +3356,14 @@ export const browserApi: RuntimeApi = {
       errors: [],
     });
   },
-  getConversationPinnedTaskPage(cursor, limit = 24) {
+  getConversationTaskSummary(projectId, taskId, taskUuid) {
+    const task = browserConversationTasks.get(taskId);
+    if (!task || task.projectId !== projectId || (taskUuid && task.taskUuid !== taskUuid)) {
+      return Promise.reject({ code: 'task.not-found', params: { taskId } });
+    }
+    return Promise.resolve({ ...task, runs: [], runHistoryStatus: 'not-loaded', runsNextCursor: null });
+  },
+  getConversationPinnedTaskPage(cursor, limit = 7) {
     const tasks = [...browserConversationTasks.values()].filter((task) => task.pinned);
     const start = cursor ? Math.max(0, tasks.findIndex((task) => task.taskId === cursor) + 1) : 0;
     const page = tasks.slice(start, start + limit);
@@ -2973,7 +3373,18 @@ export const browserApi: RuntimeApi = {
       errors: [],
     });
   },
-  getConversationRunSummaryPage(projectId, taskId, cursor, limit = 20) {
+  getConversationRecentTaskPage(cursor, limit = 7) {
+    const tasks = [...browserConversationTasks.values()]
+      .sort((left, right) => (right.lastActivityAt ?? '').localeCompare(left.lastActivityAt ?? ''));
+    const start = cursor ? Math.max(0, tasks.findIndex((task) => task.taskId === cursor) + 1) : 0;
+    const page = tasks.slice(start, start + limit);
+    return Promise.resolve({
+      tasks: page.map((task) => ({ ...task, workspaceName: 'Default Workspace' })),
+      nextCursor: start + limit < tasks.length ? page.at(-1)?.taskId ?? null : null,
+      errors: [],
+    });
+  },
+  getConversationRunSummaryPage(projectId, taskId, cursor, limit = 7) {
     const task = browserConversationTasks.get(taskId);
     const start = cursor ? Math.max(0, (task?.runs ?? []).findIndex((run) => run.runId === cursor) + 1) : 0;
     const runs = (task?.runs ?? []).slice(start, start + limit);
@@ -3267,6 +3678,7 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve([{ projectId: 'default', workspacePath: '/default', name: 'Default Workspace' }]);
   },
   getConversationRun(_projectId, _taskId, runId) {
+    if (runId === 'run-056') return Promise.resolve(structuredClone(browserFailedWorkflowFixture()));
     if (isBrowserPausedWorkflow(_projectId, _taskId, runId)) return Promise.resolve(structuredClone(browserPausedWorkflowFixture().run));
     if (runId === 'run-051') return Promise.resolve(mockErrorBlockedConversationRun);
     if (runId === 'run-052') return Promise.resolve(browserCompletedConversationRun());

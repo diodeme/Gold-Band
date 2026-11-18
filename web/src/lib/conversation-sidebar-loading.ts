@@ -1,16 +1,60 @@
 import type {
   ConversationPinnedTaskPageVm,
+  ConversationRecentTaskPageVm,
+  ConversationRecentTaskRowVm,
   ConversationRunSummaryPageVm,
   ConversationSidebarBootstrapVm,
   ConversationSidebarVm,
   ConversationTaskPageVm,
   ConversationTaskRowVm,
 } from '@/types';
+import { parseTimestamp } from '@/lib/datetime';
 
-export const CONVERSATION_TASK_PAGE_SIZE = 24;
-export const CONVERSATION_RUN_PAGE_SIZE = 20;
+export const CONVERSATION_TASK_PAGE_SIZE = 7;
+export const CONVERSATION_RUN_PAGE_SIZE = 7;
+/** Every sidebar section pages at the same documented 7-row size (2026-11-05 由 10 下调). */
+export const CONVERSATION_PINNED_TASK_PAGE_SIZE = 7;
 export const CONVERSATION_SIDEBAR_TASK_WINDOW = 120;
 export const CONVERSATION_SIDEBAR_RUN_WINDOW = 100;
+
+function orderTaskRows(tasks: ConversationTaskRowVm[]) {
+  return tasks.sort((left, right) =>
+    (parseTimestamp(right.lastActivityAt)?.getTime() ?? 0) - (parseTimestamp(left.lastActivityAt)?.getTime() ?? 0)
+    || right.taskId.localeCompare(left.taskId));
+}
+
+export function clearConversationLocatedTask(
+  sidebar: ConversationSidebarVm,
+  destination?: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>,
+): ConversationSidebarVm {
+  const target = sidebar.locatedTask;
+  if (!target) return sidebar;
+  if (destination && destination.projectId === target.projectId && destination.taskId === target.taskId
+    && (!destination.taskUuid || !target.taskUuid || destination.taskUuid === target.taskUuid)) return sidebar;
+  return {
+    ...sidebar,
+    locatedTask: null,
+    tasksByWorkspace: {
+      ...sidebar.tasksByWorkspace,
+      [target.projectId]: (sidebar.tasksByWorkspace[target.projectId] ?? []).filter((task) => !sameTask(task, target)),
+    },
+  };
+}
+
+export function locateConversationSidebarTask(sidebar: ConversationSidebarVm, task: ConversationTaskRowVm): ConversationSidebarVm {
+  if (!sidebar.workspaces.some((workspace) => workspace.projectId === task.projectId)) return sidebar;
+  const current = sidebar.tasksByWorkspace[task.projectId] ?? [];
+  if (current.some((candidate) => sameTask(candidate, task))) return sidebar;
+  const cleared = clearConversationLocatedTask(sidebar);
+  return {
+    ...cleared,
+    locatedTask: { projectId: task.projectId, taskId: task.taskId, taskUuid: task.taskUuid },
+    tasksByWorkspace: {
+      ...cleared.tasksByWorkspace,
+      [task.projectId]: orderTaskRows([...(cleared.tasksByWorkspace[task.projectId] ?? []), normalizeTask(task)]),
+    },
+  };
+}
 
 function taskKey(task: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>) {
   return JSON.stringify([task.projectId, task.taskUuid ?? task.taskId]);
@@ -21,6 +65,26 @@ function sameTask(
   right: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>,
 ) {
   return taskKey(left) === taskKey(right);
+}
+
+/** New canonical activity makes a search-only row part of the ordinary window. */
+export function promoteConversationLocatedTask(
+  sidebar: ConversationSidebarVm,
+  task: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>,
+): ConversationSidebarVm {
+  if (!sidebar.locatedTask || !sameTask(sidebar.locatedTask, task)) return sidebar;
+  const tasks = sidebar.tasksByWorkspace[task.projectId] ?? [];
+  return {
+    ...sidebar,
+    locatedTask: null,
+    tasksByWorkspace: {
+      ...sidebar.tasksByWorkspace,
+      [task.projectId]: [
+        ...tasks.filter((candidate) => sameTask(candidate, task)),
+        ...tasks.filter((candidate) => !sameTask(candidate, task)),
+      ].slice(0, CONVERSATION_SIDEBAR_TASK_WINDOW),
+    },
+  };
 }
 
 function mergeTasks(
@@ -75,6 +139,8 @@ export function createEmptyConversationSidebar(): ConversationSidebarVm {
     pinRefs: [],
     pinnedTasks: [],
     pinnedTaskPage: { status: 'not-loaded', nextCursor: null },
+    recentTasks: [],
+    recentTaskPage: { status: 'not-loaded', nextCursor: null },
     tasksByWorkspace: {},
     workspaceTaskPages: {},
     lastActiveWorkspaceId: null,
@@ -107,12 +173,17 @@ export function applyConversationSidebarBootstrap(
   const next: ConversationSidebarVm = {
     ...sidebar,
     loadStatus: 'ready',
+    locatedTask: sidebar.locatedTask && projectIds.has(sidebar.locatedTask.projectId) ? sidebar.locatedTask : null,
     workspaces: bootstrap.workspaces,
     pinRefs: bootstrap.pinRefs,
     pinnedTasks: sidebar.pinnedTasks.filter((task) => projectIds.has(task.projectId)),
     pinnedTaskPage: bootstrap.pinRefs.length === 0
       ? { status: 'ready', nextCursor: null }
       : { status: 'not-loaded', nextCursor: null },
+    // The workspace identity set changed; the merged recent list restarts from
+    // a fresh page so removed workspaces cannot linger in it.
+    recentTasks: sidebar.recentTasks.filter((task) => projectIds.has(task.projectId)),
+    recentTaskPage: { status: 'not-loaded', nextCursor: null },
     tasksByWorkspace,
     workspaceTaskPages,
     lastActiveWorkspaceId: bootstrap.lastActiveWorkspaceId ?? null,
@@ -160,10 +231,16 @@ export function applyConversationTaskPage(
   if (!sidebar.workspaces.some((workspace) => workspace.projectId === page.projectId)) return sidebar;
   const incoming = page.tasks.map(normalizeTask);
   const current = sidebar.tasksByWorkspace[page.projectId] ?? [];
-  const tasks = append ? mergeTasks(current, incoming) : mergeTasks(incoming, current);
+  const target = sidebar.locatedTask?.projectId === page.projectId ? sidebar.locatedTask : null;
+  const extraRow = target ? incoming.find((task) => sameTask(task, target)) ?? current.find((task) => sameTask(task, target)) : null;
+  const ordinary = target ? current.filter((task) => !sameTask(task, target)) : current;
+  const tasks = append ? mergeTasks(ordinary, incoming) : mergeTasks(incoming, ordinary);
+  const targetInPage = target && tasks.some((task) => sameTask(task, target));
+  const visibleTasks = extraRow && !targetInPage ? orderTaskRows([...tasks, extraRow]) : tasks;
   const next: ConversationSidebarVm = {
     ...sidebar,
-    tasksByWorkspace: { ...sidebar.tasksByWorkspace, [page.projectId]: tasks },
+    locatedTask: targetInPage ? null : sidebar.locatedTask,
+    tasksByWorkspace: { ...sidebar.tasksByWorkspace, [page.projectId]: visibleTasks },
     workspaceTaskPages: {
       ...sidebar.workspaceTaskPages,
       [page.projectId]: {
@@ -200,6 +277,104 @@ export function applyConversationPinnedTaskPage(
   };
 }
 
+/** Merged recent rows stay ordered by the backend page order (activity desc). */
+export const CONVERSATION_SIDEBAR_RECENT_WINDOW = 100;
+
+function mergeRecentTasks(
+  first: ConversationRecentTaskRowVm[],
+  second: ConversationRecentTaskRowVm[],
+) {
+  const seen = new Set<string>();
+  const merged: ConversationRecentTaskRowVm[] = [];
+  for (const task of [...first, ...second]) {
+    const key = taskKey(task);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(task);
+    if (merged.length >= CONVERSATION_SIDEBAR_RECENT_WINDOW) break;
+  }
+  return merged;
+}
+
+export function beginConversationRecentTaskLoad(sidebar: ConversationSidebarVm): ConversationSidebarVm {
+  return { ...sidebar, recentTaskPage: { ...sidebar.recentTaskPage, status: 'loading' } };
+}
+
+export function failConversationRecentTaskLoad(sidebar: ConversationSidebarVm): ConversationSidebarVm {
+  return { ...sidebar, recentTaskPage: { ...sidebar.recentTaskPage, status: 'error' } };
+}
+
+export function applyConversationRecentTaskPage(
+  sidebar: ConversationSidebarVm,
+  page: ConversationRecentTaskPageVm,
+  append: boolean,
+): ConversationSidebarVm {
+  const recentTasks = append
+    ? mergeRecentTasks(sidebar.recentTasks, page.tasks)
+    : mergeRecentTasks(page.tasks, sidebar.recentTasks);
+  return {
+    ...sidebar,
+    recentTasks,
+    recentTaskPage: {
+      status: 'ready',
+      nextCursor: recentTasks.length >= CONVERSATION_SIDEBAR_RECENT_WINDOW ? null : page.nextCursor ?? null,
+    },
+  };
+}
+
+/** Collapsing a list drops everything paged beyond the default first page so
+ *  reopening shows the default page size again; the next expand re-requests
+ *  page one through the existing not-loaded path. */
+export function resetConversationWorkspaceTaskPage(
+  sidebar: ConversationSidebarVm,
+  projectId: string,
+): ConversationSidebarVm {
+  if (!sidebar.workspaces.some((workspace) => workspace.projectId === projectId)) return sidebar;
+  return {
+    ...sidebar,
+    tasksByWorkspace: { ...sidebar.tasksByWorkspace, [projectId]: [] },
+    workspaceTaskPages: {
+      ...sidebar.workspaceTaskPages,
+      [projectId]: { status: 'not-loaded', nextCursor: null },
+    },
+  };
+}
+
+export function resetConversationRecentTaskPage(sidebar: ConversationSidebarVm): ConversationSidebarVm {
+  return {
+    ...sidebar,
+    recentTasks: [],
+    recentTaskPage: { status: 'not-loaded', nextCursor: null },
+  };
+}
+
+/** Projects one task-row transform into recent rows, preserving `workspaceName`. */
+export function mapConversationRecentTasks(
+  recentTasks: ConversationRecentTaskRowVm[],
+  transform: (task: ConversationTaskRowVm) => ConversationTaskRowVm,
+): ConversationRecentTaskRowVm[] {
+  if (recentTasks.length === 0) return recentTasks;
+  let changed = false;
+  const next = recentTasks.map((row) => {
+    const transformed = transform(row);
+    if (transformed === row) return row;
+    changed = true;
+    return { ...transformed, workspaceName: row.workspaceName };
+  });
+  return changed ? next : recentTasks;
+}
+
+/** Moves recent rows whose activity advanced to the merged front. */
+export function promoteConversationRecentTasks(
+  recentTasks: ConversationRecentTaskRowVm[],
+  predicate: (task: ConversationTaskRowVm) => boolean,
+): ConversationRecentTaskRowVm[] {
+  if (recentTasks.length === 0) return recentTasks;
+  const front = recentTasks.filter(predicate);
+  if (front.length === 0) return recentTasks;
+  return [...front, ...recentTasks.filter((task) => !predicate(task))];
+}
+
 function updateTaskCopies(
   sidebar: ConversationSidebarVm,
   predicate: (task: ConversationTaskRowVm) => boolean,
@@ -208,6 +383,7 @@ function updateTaskCopies(
   return {
     ...sidebar,
     pinnedTasks: sidebar.pinnedTasks.map((task) => predicate(task) ? update(task) : task),
+    recentTasks: mapConversationRecentTasks(sidebar.recentTasks ?? [], (task) => predicate(task) ? update(task) : task),
     tasksByWorkspace: Object.fromEntries(Object.entries(sidebar.tasksByWorkspace).map(([projectId, tasks]) => [
       projectId,
       tasks.map((task) => predicate(task) ? update(task) : task),
@@ -268,7 +444,11 @@ export function removeConversationSidebarTask(
 ) {
   return {
     ...sidebar,
+    locatedTask: sidebar.locatedTask?.projectId === projectId && sidebar.locatedTask.taskId === taskId ? null : sidebar.locatedTask,
     pinnedTasks: sidebar.pinnedTasks.filter((task) => task.projectId !== projectId || task.taskId !== taskId),
+    // A deleted conversation must leave every projection, including the merged
+    // recent list, or it stays clickable there until the next page reload.
+    recentTasks: (sidebar.recentTasks ?? []).filter((task) => task.projectId !== projectId || task.taskId !== taskId),
     tasksByWorkspace: {
       ...sidebar.tasksByWorkspace,
       [projectId]: (sidebar.tasksByWorkspace[projectId] ?? [])
@@ -277,56 +457,25 @@ export function removeConversationSidebarTask(
   };
 }
 
-type SidebarFlight = {
-  promise: Promise<unknown>;
-  refresh?: () => Promise<unknown>;
-};
-
-export class ConversationSidebarSingleFlight {
-  private readonly flights = new Map<string, SidebarFlight>();
-  private readonly generations = new Map<string, number>();
-
-  generation(key: string) {
-    return this.generations.get(key) ?? 0;
-  }
-
-  isCurrent(key: string, generation: number) {
-    return this.generation(key) === generation;
-  }
-
-  run<T>(key: string, request: () => Promise<T>, refresh = false): Promise<T> {
-    const current = this.flights.get(key);
-    if (current) {
-      if (refresh) current.refresh = request;
-      return current.promise as Promise<T>;
-    }
-    const flight: SidebarFlight = { promise: Promise.resolve() };
-    this.flights.set(key, flight);
-    const drain = async () => {
-      let next = request;
-      for (;;) {
-        let result: T;
-        try {
-          result = await next();
-        } catch (error) {
-          if (this.flights.get(key) !== flight || !flight.refresh) throw error;
-          next = flight.refresh as () => Promise<T>;
-          flight.refresh = undefined;
-          continue;
-        }
-        if (this.flights.get(key) !== flight || !flight.refresh) return result;
-        next = flight.refresh as () => Promise<T>;
-        flight.refresh = undefined;
-      }
-    };
-    flight.promise = drain().finally(() => {
-      if (this.flights.get(key) === flight) this.flights.delete(key);
-    });
-    return flight.promise as Promise<T>;
-  }
-
-  invalidate(key: string) {
-    this.generations.set(key, this.generation(key) + 1);
-    this.flights.delete(key);
-  }
+/**
+ * Flight keys whose in-flight page loads are premise-void once a bootstrap
+ * identity set lands: workspace pages, the pinned page, and the merged recent
+ * page all paginate a workspace set that just changed. Invalidating them makes
+ * their results no-op (generation check) and lets the bootstrap's own follow-up
+ * loads start fresh instead of being deduped onto the stale flights.
+ */
+export function conversationSidebarBootstrapInvalidationKeys(
+  sidebar: ConversationSidebarVm,
+  bootstrap: ConversationSidebarBootstrapVm,
+): string[] {
+  const projectIds = new Set([
+    ...sidebar.workspaces.map((workspace) => workspace.projectId),
+    ...bootstrap.workspaces.map((workspace) => workspace.projectId),
+    ...Object.keys(sidebar.tasksByWorkspace),
+  ]);
+  return [
+    ...[...projectIds].map((projectId) => `workspace:${projectId}`),
+    'pinned',
+    'recent',
+  ];
 }

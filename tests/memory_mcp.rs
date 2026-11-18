@@ -129,6 +129,8 @@ fn unbound_memory_stdio_supports_protocol_diagnostics_and_rejects_tool_calls() {
     assert!(init["capabilities"].get("tools").is_some());
     let tools = request(2, "tools/list", json!({}));
     assert_eq!(tools["tools"].as_array().unwrap().len(), 2);
+    assert!(tools.get("ttlMs").is_none());
+    assert!(tools.get("cacheScope").is_none());
     let read = request(
         3,
         "tools/call",
@@ -139,6 +141,67 @@ fn unbound_memory_stdio_supports_protocol_diagnostics_and_rejects_tool_calls() {
     assert_eq!(error["code"], "memory.context-required");
 
     drop(request);
+    drop(input);
+    drop(child);
+    reader.join().unwrap();
+}
+
+#[test]
+fn modern_memory_stdio_tools_publish_cache_hints() {
+    let mut command = gold_band::process::background_command(env!("CARGO_BIN_EXE_gold-band"));
+    command.arg(gold_band::memory::mcp::FLAG);
+    let mut child = ChildGuard(
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap(),
+    );
+    let mut input = child.0.stdin.take().unwrap();
+    let stdout = child.0.stdout.take().unwrap();
+    let (tx, rx) = mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            if tx.send(line.unwrap()).is_err() {
+                break;
+            }
+        }
+    });
+
+    writeln!(
+        input,
+        "{}",
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": {
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientInfo": {
+                        "name": "deepseek-mcp-diagnostic",
+                        "version": "0.0.1"
+                    },
+                    "io.modelcontextprotocol/clientCapabilities": {}
+                }
+            }
+        })
+    )
+    .unwrap();
+    input.flush().unwrap();
+
+    let response: Value = serde_json::from_str(
+        &rx.recv_timeout(Duration::from_secs(20))
+            .expect("modern tools/list response timeout"),
+    )
+    .unwrap();
+    assert!(response.get("error").is_none(), "{response}");
+    assert_eq!(response["result"]["resultType"], "complete");
+    assert_eq!(response["result"]["ttlMs"], 0);
+    assert_eq!(response["result"]["cacheScope"], "private");
+    assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 2);
+
     drop(input);
     drop(child);
     reader.join().unwrap();
@@ -230,6 +293,8 @@ fn memory_stdio_tools_share_durable_state_and_reject_stale_revisions() {
     assert!(init["capabilities"].get("tools").is_some());
     let tools = request(2, "tools/list", json!({}));
     assert_eq!(tools["tools"].as_array().unwrap().len(), 2);
+    assert!(tools.get("ttlMs").is_none());
+    assert!(tools.get("cacheScope").is_none());
     let write_tool = tools["tools"]
         .as_array()
         .unwrap()

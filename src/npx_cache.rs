@@ -370,16 +370,26 @@ fn installed_bin(cache: &Path, spec: &NpxSpec) -> Option<PathBuf> {
     let hash: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
     let root = cache.join("_npx").join(hash);
     let manifest = read_json(&root.join("package.json"))?;
-    if manifest.pointer("/_npx/packages")? != &Value::from(vec![spec.raw.clone()]) {
+    let requirement = manifest.get("dependencies")?.get(&spec.name)?.as_str()?;
+    if !semver::VersionReq::parse(requirement)
+        .ok()?
+        .matches(&spec.version)
+    {
         return None;
     }
-    // Written by npm only after the install tree was fully reified.
-    if !root.join("node_modules/.package-lock.json").is_file() {
+    // npm's installed lock records the completed tree; root manifests need no private metadata.
+    let lock = read_json(&root.join("node_modules/.package-lock.json"))?;
+    let locked = lock
+        .get("packages")?
+        .get(format!("node_modules/{}", spec.name))?;
+    if semver::Version::parse(locked.get("version")?.as_str()?).ok()? != spec.version {
         return None;
     }
     let package = root.join("node_modules").join(&spec.name);
     let manifest = read_json(&package.join("package.json"))?;
-    if semver::Version::parse(manifest.get("version")?.as_str()?).ok()? != spec.version {
+    if manifest.get("name")?.as_str()? != spec.name
+        || semver::Version::parse(manifest.get("version")?.as_str()?).ok()? != spec.version
+    {
         return None;
     }
     let bin = match manifest.get("bin")? {
@@ -451,7 +461,7 @@ mod tests {
         exact_npx_spec("npx", &args(&["-y", SPEC])).unwrap().0
     }
 
-    /// Lays out an npx install of `SPEC` the way npm 11 does and returns its root directory.
+    /// Lays out npm's dependency manifest and completed installed-lock records for `SPEC`.
     fn install(cache: &Path, bin: Value) -> PathBuf {
         let hash: String = Sha512::digest(SPEC.as_bytes())[..8]
             .iter()
@@ -462,10 +472,18 @@ mod tests {
         fs::create_dir_all(package.join("dist")).unwrap();
         fs::write(
             root.join("package.json"),
-            serde_json::json!({"dependencies": {"@scope/fixture-acp": "^1.2.3"}, "_npx": {"packages": [SPEC]}}).to_string(),
+            serde_json::json!({"dependencies": {"@scope/fixture-acp": "^1.2.3"}}).to_string(),
         )
         .unwrap();
-        fs::write(root.join("node_modules/.package-lock.json"), "{}").unwrap();
+        fs::write(
+            root.join("node_modules/.package-lock.json"),
+            serde_json::json!({
+                "lockfileVersion": 3,
+                "packages": {"node_modules/@scope/fixture-acp": {"version": "1.2.3"}}
+            })
+            .to_string(),
+        )
+        .unwrap();
         fs::write(
             package.join("package.json"),
             serde_json::json!({"name": "@scope/fixture-acp", "version": "1.2.3", "bin": bin})
@@ -524,24 +542,73 @@ mod tests {
     }
 
     #[test]
+    fn locates_standard_npm_cache_without_private_npx_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = install(temp.path(), Value::from("dist/index.js"));
+        fs::write(
+            root.join("package.json"),
+            serde_json::json!({"dependencies": {"@scope/fixture-acp": "^1.2.3"}}).to_string(),
+        )
+        .unwrap();
+        fs::write(
+            root.join("node_modules/.package-lock.json"),
+            serde_json::json!({
+                "lockfileVersion": 3,
+                "packages": {"node_modules/@scope/fixture-acp": {"version": "1.2.3"}}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            installed_bin(temp.path(), &spec()),
+            Some(root.join("node_modules/@scope/fixture-acp/dist/index.js")),
+            "a complete npm installation must not require invented private metadata"
+        );
+    }
+
+    #[test]
     fn unverifiable_installs_fall_back_to_npx() {
         let temp = tempfile::tempdir().unwrap();
         type BreakInstall = fn(&Path);
-        let cases: [(&str, BreakInstall); 6] = [
+        let cases: [(&str, BreakInstall); 10] = [
             ("dependency of another npx install", |root| {
                 fs::write(
                     root.join("package.json"),
-                    r#"{"_npx":{"packages":["other@1.0.0"]}}"#,
+                    r#"{"dependencies":{"other":"^1.0.0"}}"#,
+                )
+                .unwrap();
+            }),
+            ("different declared version range", |root| {
+                fs::write(
+                    root.join("package.json"),
+                    r#"{"dependencies":{"@scope/fixture-acp":"^2.0.0"}}"#,
                 )
                 .unwrap();
             }),
             ("install not finished", |root| {
                 fs::remove_file(root.join("node_modules/.package-lock.json")).unwrap();
             }),
+            ("missing installed lock entry", |root| {
+                fs::write(root.join("node_modules/.package-lock.json"), "{}").unwrap();
+            }),
+            ("different locked version", |root| {
+                fs::write(
+                    root.join("node_modules/.package-lock.json"),
+                    r#"{"packages":{"node_modules/@scope/fixture-acp":{"version":"1.2.4"}}}"#,
+                )
+                .unwrap();
+            }),
+            ("different package identity", |root| {
+                fs::write(
+                    root.join("node_modules/@scope/fixture-acp/package.json"),
+                    r#"{"name":"other","version":"1.2.3","bin":"dist/index.js"}"#,
+                )
+                .unwrap();
+            }),
             ("different installed version", |root| {
                 fs::write(
                     root.join("node_modules/@scope/fixture-acp/package.json"),
-                    r#"{"version":"1.2.4","bin":"dist/index.js"}"#,
+                    r#"{"name":"@scope/fixture-acp","version":"1.2.4","bin":"dist/index.js"}"#,
                 )
                 .unwrap();
             }),
@@ -552,14 +619,14 @@ mod tests {
             ("ambiguous bin map", |root| {
                 fs::write(
                     root.join("node_modules/@scope/fixture-acp/package.json"),
-                    r#"{"version":"1.2.3","bin":{"a":"dist/index.js","b":"dist/index.js"}}"#,
+                    r#"{"name":"@scope/fixture-acp","version":"1.2.3","bin":{"a":"dist/index.js","b":"dist/index.js"}}"#,
                 )
                 .unwrap();
             }),
             ("bin escaping the package", |root| {
                 fs::write(
                     root.join("node_modules/@scope/fixture-acp/package.json"),
-                    r#"{"version":"1.2.3","bin":"../../../package.json"}"#,
+                    r#"{"name":"@scope/fixture-acp","version":"1.2.3","bin":"../../../package.json"}"#,
                 )
                 .unwrap();
             }),

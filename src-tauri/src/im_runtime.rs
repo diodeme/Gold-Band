@@ -2809,33 +2809,44 @@ async fn install_scanned_credentials(
                     {
                         return Err(im_error("IM_CHANNEL_CLEANUP_PENDING"));
                     }
-                    let mut settings = app.load_settings().map_err(im_command_error)?;
-                    let original_settings = settings.clone();
-                    let existing = settings
-                        .im_integrations
-                        .channels
-                        .iter()
-                        .find(|channel| channel.kind == kind)
-                        .cloned();
-                    let old_reference = existing
-                        .as_ref()
-                        .and_then(|channel| channel.credential_ref.clone());
-                    upsert_channel(
-                        &mut settings.im_integrations,
-                        scanned_channel_settings(
-                            kind,
-                            public_identity,
-                            reference,
-                            existing.as_ref(),
-                        ),
-                    );
-                    app.save_settings(&settings).map_err(im_command_error)?;
-                    if let Err(error) = state.update_settings_config(&settings) {
-                        let _ = app.save_settings(&original_settings);
-                        let _ = state.update_settings_config(&original_settings);
-                        return Err(im_command_error(error));
-                    }
-                    Ok((settings, old_reference))
+                    gold_band::storage::configuration::with_configuration(
+                        &app.paths.user_gold_band_dir(),
+                        || {
+                            let mut settings = app.load_settings()?;
+                            let mut original_settings = settings.clone();
+                            let existing = settings
+                                .im_integrations
+                                .channels
+                                .iter()
+                                .find(|channel| channel.kind == kind)
+                                .cloned();
+                            let old_reference = existing
+                                .as_ref()
+                                .and_then(|channel| channel.credential_ref.clone());
+                            upsert_channel(
+                                &mut settings.im_integrations,
+                                scanned_channel_settings(
+                                    kind,
+                                    public_identity,
+                                    reference,
+                                    existing.as_ref(),
+                                ),
+                            );
+                            let committed_revision = gold_band::storage::save_settings_file(
+                                &app.paths.user_settings_file(),
+                                &settings,
+                            )?;
+                            if let Err(error) = state.update_settings_config(&settings) {
+                                original_settings.storage_revision = committed_revision;
+                                if app.save_settings(&original_settings).is_ok() {
+                                    let _ = state.update_settings_config(&original_settings);
+                                }
+                                return Err(error);
+                            }
+                            Ok((settings, old_reference))
+                        },
+                    )
+                    .map_err(im_command_error)
                 })
             })?;
         if let Some(old_reference) = old_reference

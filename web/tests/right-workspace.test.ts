@@ -53,6 +53,20 @@ const agent = (branchId: string): RightWorkspaceResource => ({
 });
 
 describe('right workspace resource model', () => {
+  it('reactivates an artifact tab and preserves independent tabs for different sources', () => {
+    const makeArtifact = (attemptId: string): ConversationAssetWorkspaceResource => {
+      const source = { ...locator('branch-a'), attemptId };
+      return { kind: 'conversation-asset', key: conversationAssetWorkspaceResourceKey('artifact', source, 'report.md'), assetKind: 'artifact', locator: source, name: 'report.md', title: 'report.md', scopeKey: 'conversation:project-1:task-uuid-1:run-1', attention: false };
+    };
+    const first = makeArtifact('attempt-a');
+    const second = makeArtifact('attempt-b');
+    let state = rightWorkspaceReducer(createInitialRightWorkspaceState(), { type: 'open', resource: first });
+    state = rightWorkspaceReducer(state, { type: 'open', resource: second });
+    state = rightWorkspaceReducer(state, { type: 'open', resource: first });
+    expect(state.tabs).toHaveLength(2);
+    expect(state.activeTabKey).toBe(first.key);
+    expect((state.tabs[1] as ConversationAssetWorkspaceResource).locator.attemptId).toBe('attempt-b');
+  });
   it('keeps one source-control tab and only projects a different workspace identity', () => {
     const resource: RightWorkspaceResource = {
       kind: 'source-control',

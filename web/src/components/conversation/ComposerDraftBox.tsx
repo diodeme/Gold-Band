@@ -8,9 +8,19 @@ import {
   Trash2,
   UserRound,
 } from 'lucide-react';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -18,7 +28,7 @@ import {
   deleteConversationComposerDraft,
   listConversationComposerDrafts,
   saveConversationComposerDraft,
-  takeConversationComposerDraft,
+  getConversationComposerDraft,
 } from '@/api';
 import { displayAppError } from '@/i18n';
 import { formatCompactRelativeTime } from '@/lib/datetime';
@@ -29,12 +39,11 @@ import type {
   ConversationQueuedPromptDraftVm,
 } from '@/types';
 
-/** The composer's current payload, already detached from the input; exactly one of commit/rollback runs. */
+/** A snapshot retained in the composer until storage succeeds. */
 export interface CapturedComposerDraft {
   input: ConversationPromptInput;
   attachmentPaths: string[];
   commit: () => void;
-  rollback: () => void;
 }
 
 export interface ComposerDraftBoxProps {
@@ -48,20 +57,16 @@ export interface ComposerDraftBoxProps {
   captureDraft: () => Promise<CapturedComposerDraft | null>;
   /** Puts a taken draft into the empty composer; returns false when the composer filled up meanwhile. */
   restoreDraft: (draft: ConversationQueuedPromptDraftVm) => boolean;
+  /** Acquires the composer transfer lock before any read/consume mutation. */
+  acquireMutation?: () => boolean;
+  onPendingChange?: (pending: boolean) => void;
 }
 
-type DraftBoxScope = { key: string; box: ConversationComposerDraftBoxVm | null };
-
-function draftInput(draft: ConversationQueuedPromptDraftVm): ConversationPromptInput {
-  return {
-    displayText: draft.content,
-    quotes: draft.quotes,
-    ...(draft.role ? { role: draft.role } : {}),
-    ...(draft.workspaceFiles?.length ? { workspaceFiles: draft.workspaceFiles } : {}),
-  };
+export function ComposerDraftBox(props: ComposerDraftBoxProps) {
+  return <ScopedComposerDraftBox key={JSON.stringify([props.projectId ?? null, props.taskId])} {...props} />;
 }
 
-export function ComposerDraftBox({
+function ScopedComposerDraftBox({
   projectId,
   taskId,
   disabled,
@@ -69,40 +74,72 @@ export function ComposerDraftBox({
   composerOccupied,
   captureDraft,
   restoreDraft,
+  acquireMutation,
+  onPendingChange,
 }: ComposerDraftBoxProps) {
   const { t } = useTranslation();
-  const scopeKey = `${projectId ?? ''}\u0000${taskId}`;
-  const [scope, setScope] = useState<DraftBoxScope>({ key: scopeKey, box: null });
-  const [open, setOpen] = useState(false);
-  // Set when the box closes because the composer took focus (save / take);
-  // Radix would otherwise move focus back to the trigger.
+  const [box, setBox] = useState<ConversationComposerDraftBoxVm | null>(null);
+  const [loadStatus, setLoadStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const composerOwnsFocusOnCloseRef = useRef(false);
+  const [open, setOpen] = useState(false);
   const [pending, setPending] = useState<'save' | string | null>(null);
+  const [deleteConfirmItemId, setDeleteConfirmItemId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const box = scope.key === scopeKey ? scope.box : null;
+  const active = useRef(true);
+  const listInFlight = useRef(false);
+  const mutationInFlight = useRef(false);
+  const mutationRevision = useRef(0);
 
-  // Only boxes for the current conversation, at the same or a newer revision, are accepted.
-  const converge = (key: string, next: ConversationComposerDraftBoxVm) => {
-    setScope((current) => {
-      if (current.key !== key) return current;
-      if (current.box && current.box.revision > next.revision) return current;
-      return { key, box: next };
-    });
-  };
+  const beginPending = useCallback((next: 'save' | string) => {
+    setPending(next);
+    onPendingChange?.(true);
+  }, [onPendingChange]);
+  const endPending = useCallback(() => {
+    setPending(null);
+    onPendingChange?.(false);
+  }, [onPendingChange]);
+
+  const converge = useCallback((next: ConversationComposerDraftBoxVm) => {
+    setBox((current) => current && current.revision > next.revision ? current : next);
+    setLoadStatus('ready');
+  }, []);
 
   useEffect(() => {
-    let active = true;
-    setScope((current) => (current.key === scopeKey ? current : { key: scopeKey, box: null }));
+    active.current = true;
+    return () => { active.current = false; };
+  }, []);
+
+  useEffect(() => () => onPendingChange?.(false), [onPendingChange]);
+
+  const load = useCallback(async () => {
+    if (listInFlight.current) return;
+    listInFlight.current = true;
+    const revision = mutationRevision.current;
+    setLoadStatus('loading');
     setError(null);
-    void listConversationComposerDrafts(projectId, taskId).then((next) => {
-      if (active) converge(scopeKey, next);
-    }).catch(() => {
-      // The entry stays usable; the list shows its empty state until the next successful write.
-    });
-    return () => {
-      active = false;
-    };
-  }, [projectId, scopeKey, taskId]);
+    try {
+      const next = await listConversationComposerDrafts(projectId, taskId);
+      if (active.current && mutationRevision.current === revision) converge(next);
+    } catch (loadError) {
+      if (active.current && mutationRevision.current === revision) {
+        setLoadStatus('error');
+        setError(displayAppError(t, loadError));
+      }
+    } finally {
+      listInFlight.current = false;
+    }
+  }, [projectId, taskId, converge, t]);
+
+  useEffect(() => {
+    if (open) void load();
+  }, [open, load]);
+
+  // The bounded summary (≤20 items × 280-char previews) is prefetched on mount
+  // so the saved-draft count is visible before the box is ever opened; the
+  // list body still only renders inside the popover.
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   const count = box?.items.length ?? 0;
   const maxItems = box?.maxItems ?? 0;
@@ -115,71 +152,96 @@ export function ComposerDraftBox({
   };
 
   const save = async () => {
-    if (busy || !canSave || full) return;
-    setPending('save');
+    if (disabled || mutationInFlight.current || !canSave || full) return;
+    if (acquireMutation && !acquireMutation()) return;
+    mutationInFlight.current = true;
+    beginPending('save');
     setError(null);
-    const captured = await captureDraft().catch(() => null);
-    if (!captured) {
-      setPending(null);
-      return;
-    }
     try {
+      const captured = await captureDraft();
+      if (!captured || !active.current) return;
       const next = await saveConversationComposerDraft(
         projectId,
         taskId,
         captured.input,
         captured.attachmentPaths.length > 0 ? captured.attachmentPaths : undefined,
       );
+      if (!active.current) return;
+      mutationRevision.current += 1;
       captured.commit();
-      converge(scopeKey, next);
+      converge(next);
+      setError(null);
       // Saving hands focus back to the emptied composer, so the box steps aside.
       closeToComposer();
     } catch (saveError) {
-      captured.rollback();
-      setError(displayAppError(t, saveError));
+      if (active.current) setError(displayAppError(t, saveError));
     } finally {
-      setPending(null);
+      mutationInFlight.current = false;
+      if (active.current) endPending();
     }
   };
 
   const take = async (draftId: string) => {
-    if (busy || composerOccupied) return;
-    setPending(draftId);
+    if (disabled || mutationInFlight.current || composerOccupied) return;
+    if (acquireMutation && !acquireMutation()) return;
+    mutationInFlight.current = true;
+    beginPending(draftId);
     setError(null);
+    // Tracks whether the composer already accepted the payload: a failure
+    // after that point must explain that the content was restored and the
+    // stored copy survived, instead of a bare storage error.
+    let restored = false;
     try {
-      const result = await takeConversationComposerDraft(projectId, taskId, draftId);
-      converge(scopeKey, result.drafts);
+      const result = await getConversationComposerDraft(projectId, taskId, draftId);
+      if (!active.current) return;
+      converge(result.drafts);
       if (!restoreDraft(result.draft)) {
-        // The composer filled up while the draft was being taken; put it back rather than lose it.
-        const restored = await saveConversationComposerDraft(
-          projectId,
-          taskId,
-          draftInput(result.draft),
-          result.draft.attachmentPaths.length > 0 ? result.draft.attachmentPaths : undefined,
-        );
-        converge(scopeKey, restored);
         setError(t('acp.composerDrafts.takeConflict'));
         return;
       }
+      restored = true;
+      // Delete only after the composer has accepted the complete payload.
+      const next = await deleteConversationComposerDraft(projectId, taskId, draftId);
+      if (!active.current) return;
+      mutationRevision.current += 1;
+      converge(next);
+      setError(null);
       closeToComposer();
     } catch (takeError) {
-      setError(displayAppError(t, takeError));
+      if (active.current) {
+        setError(restored
+          ? t('acp.composerDrafts.takeDeleteKept')
+          : displayAppError(t, takeError));
+      }
     } finally {
-      setPending(null);
+      mutationInFlight.current = false;
+      if (active.current) endPending();
     }
   };
 
   const remove = async (draftId: string) => {
-    if (busy) return;
-    setPending(draftId);
+    if (disabled || mutationInFlight.current) return;
+    if (acquireMutation && !acquireMutation()) return;
+    mutationInFlight.current = true;
+    beginPending(draftId);
     setError(null);
     try {
-      converge(scopeKey, await deleteConversationComposerDraft(projectId, taskId, draftId));
+      const next = await deleteConversationComposerDraft(projectId, taskId, draftId);
+      if (!active.current) return;
+      mutationRevision.current += 1;
+      converge(next);
+      setError(null);
     } catch (deleteError) {
-      setError(displayAppError(t, deleteError));
+      if (active.current) setError(displayAppError(t, deleteError));
     } finally {
-      setPending(null);
+      mutationInFlight.current = false;
+      if (active.current) endPending();
     }
+  };
+
+  const requestRemove = (draftId: string) => {
+    if (disabled || mutationInFlight.current) return;
+    setDeleteConfirmItemId(draftId);
   };
 
   const label = t('acp.composerDrafts.title');
@@ -215,7 +277,7 @@ export function ComposerDraftBox({
       <PopoverContent
         align="start"
         side="top"
-        className="w-80 p-0"
+        className="w-80 max-w-[calc(100vw-1rem)] p-0"
         onCloseAutoFocus={(event) => {
           if (!composerOwnsFocusOnCloseRef.current) return;
           composerOwnsFocusOnCloseRef.current = false;
@@ -230,27 +292,64 @@ export function ComposerDraftBox({
               {t('acp.composerDrafts.count', { count, max: maxItems })}
             </span>
           ) : null}
-          <Button
-            type="button"
-            size="sm"
-            variant="secondary"
-            className="ml-auto h-7 gap-1.5 text-xs"
-            disabled={busy || !canSave || full}
-            onClick={() => { void save(); }}
-            data-composer-draft-save="true"
-          >
-            {pending === 'save' ? <Loader2 className="size-3.5 animate-spin" /> : null}
-            {t('acp.composerDrafts.save')}
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              {full ? (
+                <span className="inline-flex" tabIndex={0}>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    className="ml-auto h-7 gap-1.5 text-xs"
+                    disabled={busy || !canSave || full}
+                    onClick={() => { void save(); }}
+                    data-composer-draft-save="true"
+                    data-composer-draft-save-full="true"
+                  >
+                    {pending === 'save' ? <Loader2 className="size-3.5 animate-spin" /> : null}
+                    {t('acp.composerDrafts.save')}
+                  </Button>
+                </span>
+              ) : (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  className="ml-auto h-7 gap-1.5 text-xs"
+                  disabled={busy || !canSave || full}
+                  onClick={() => { void save(); }}
+                  data-composer-draft-save="true"
+                >
+                  {pending === 'save' ? <Loader2 className="size-3.5 animate-spin" /> : null}
+                  {t('acp.composerDrafts.save')}
+                </Button>
+              )}
+            </TooltipTrigger>
+            <TooltipContent>
+              {full ? t('acp.composerDrafts.saveFull') : t('acp.composerDrafts.save')}
+            </TooltipContent>
+          </Tooltip>
         </div>
         {error ? (
-          <p className="px-3 pb-2 text-ui-caption text-destructive" role="alert">{error}</p>
+          <div className="flex items-center gap-2 px-3 pb-2">
+            <p className="text-ui-caption text-destructive" role="alert">{error}</p>
+            {loadStatus === 'error' ? (
+              <Button size="sm" variant="ghost" disabled={busy} onClick={() => { void load(); }} data-composer-draft-retry="true">
+                {t('common.retry')}
+              </Button>
+            ) : null}
+          </div>
         ) : null}
-        {count === 0 ? (
+        {loadStatus === 'loading' && !box ? (
+          <p className="px-3 pb-3 text-xs text-muted-foreground" role="status" data-composer-draft-loading="true">
+            {t('common.loading')}
+          </p>
+        ) : null}
+        {box && count === 0 ? (
           <p className="px-3 pb-3 text-xs text-muted-foreground" data-composer-draft-empty="true">
             {t('acp.composerDrafts.empty')}
           </p>
-        ) : (
+        ) : count > 0 ? (
           <ul className="max-h-72 overflow-y-auto border-t border-border/60 py-1" data-composer-draft-list="true">
             {box?.items.map((draft) => (
               <li
@@ -259,9 +358,9 @@ export function ComposerDraftBox({
                 data-composer-draft-id={draft.id}
               >
                 <div className="min-w-0 flex-1">
-                  {draft.content.trim() ? (
+                  {draft.contentPreview.trim() ? (
                     <p className="line-clamp-2 whitespace-pre-wrap break-words leading-5 text-foreground/90 [overflow-wrap:anywhere]">
-                      {draft.content}
+                      {draft.contentPreview}
                     </p>
                   ) : null}
                   <div className="mt-0.5 flex flex-wrap items-center gap-2 text-ui-caption text-muted-foreground">
@@ -294,16 +393,45 @@ export function ComposerDraftBox({
                   label={t('acp.composerDrafts.delete')}
                   disabled={busy}
                   destructive
-                  onClick={() => { void remove(draft.id); }}
+                  onClick={() => requestRemove(draft.id)}
                 >
                   <Trash2 className="size-3.5" />
                 </DraftAction>
               </li>
             ))}
           </ul>
-        )}
+        ) : null}
       </PopoverContent>
     </Popover>
+    <AlertDialog
+      open={deleteConfirmItemId !== null}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) setDeleteConfirmItemId(null);
+      }}
+    >
+      <AlertDialogContent data-composer-draft-delete-confirm="true">
+        <AlertDialogHeader>
+          <AlertDialogTitle>{t('acp.composerDrafts.deleteConfirmTitle')}</AlertDialogTitle>
+          <AlertDialogDescription>
+            {t('acp.composerDrafts.deleteConfirmDescription')}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel aria-label={t('common.cancel')}>{t('common.cancel')}</AlertDialogCancel>
+          <AlertDialogAction
+            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            aria-label={t('acp.composerDrafts.delete')}
+            onClick={() => {
+              const draftId = deleteConfirmItemId;
+              setDeleteConfirmItemId(null);
+              if (draftId) void remove(draftId);
+            }}
+          >
+            {t('acp.composerDrafts.delete')}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
     </TooltipProvider>
   );
 }

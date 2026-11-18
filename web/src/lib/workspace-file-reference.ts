@@ -1,6 +1,6 @@
-import type { WorkspaceDirectoryEntryVm, WorkspaceFileLocatorVm, WorkspaceRootRef } from '@/types';
+import type { PromptWorkspaceFileRef, WorkspaceDirectoryEntryVm, WorkspaceFileLocatorVm, WorkspaceRootRef } from '@/types';
 import { MAIN_WORKSPACE_TAB_ROOT, workspaceRootRef } from './workspace-root';
-import { resolveWorkspaceFileLink } from '@/api';
+import { resolveRightWorkspaceFileTarget, resolveWorkspaceFileLink } from '@/api';
 import { guessMimeFromExtension } from './attachment-service';
 import {
   addComposerWorkspaceFile,
@@ -9,9 +9,13 @@ import {
 import {
   fileBrowserWorkspaceResourceKey,
   fileWorkspaceResourceKey,
+  conversationAssetWorkspaceResourceKey,
+  type RightWorkspaceResource,
   type FileBrowserWorkspaceResource,
+  type FileWorkspaceResource,
 } from '@/components/workspace/right-workspace-context';
 import { fileContentStore } from '@/components/workspace/files/file-content-store';
+import { fileReferenceIdentity } from './file-reference-source';
 
 export function composerWorkspaceFileRefFromEntry(
   projectId: string,
@@ -19,6 +23,7 @@ export function composerWorkspaceFileRefFromEntry(
 ): ComposerWorkspaceFileRef {
   return {
     id: `${projectId}:${entry.relativePath.replaceAll('\\', '/')}`,
+    source: { kind: 'workspace', projectId, relativePath: entry.relativePath },
     projectId,
     relativePath: entry.relativePath,
     name: entry.name,
@@ -28,13 +33,21 @@ export function composerWorkspaceFileRefFromEntry(
   };
 }
 
-/** A reference to an open workspace file; files outside the workspace cannot be referenced. */
-export function composerWorkspaceFileRefFromLocator(locator: WorkspaceFileLocatorVm): ComposerWorkspaceFileRef | null {
-  if (locator.scope !== 'workspace' || !locator.relativePath) return null;
-  const relativePath = locator.relativePath.replaceAll('\\', '/');
+/** Preserve an open file's fixed source when adding it to another conversation. */
+export function composerWorkspaceFileRefFromLocator(
+  locator: WorkspaceFileLocatorVm,
+  source?: FileWorkspaceResource['source'],
+): ComposerWorkspaceFileRef | null {
+  if (!source && (locator.scope !== 'workspace' || !locator.relativePath)) return null;
+  // Fixed sources carry the submission identity; external paths only supply a display name.
+  const relativePath = (locator.relativePath ?? (source?.kind === 'git-file'
+    ? source.relativePath
+    : locator.canonicalPath.replaceAll('\\', '/').split('/').at(-1)))?.replaceAll('\\', '/');
+  if (!relativePath) return null;
   const name = relativePath.split('/').at(-1) || relativePath;
   return {
-    id: `${locator.projectId}:${relativePath}`,
+    id: source ? fileReferenceIdentity(source) : `${locator.projectId}:${relativePath}`,
+    source: source ?? { kind: 'workspace', projectId: locator.projectId, relativePath },
     projectId: locator.projectId,
     relativePath,
     name,
@@ -53,6 +66,7 @@ export function addComposerWorkspaceFileRef(
 }
 
 interface OpenableWorkspaceFileReference {
+  source?: PromptWorkspaceFileRef;
   projectId: string;
   relativePath: string;
   canonicalPath?: string;
@@ -67,9 +81,27 @@ interface OpenableWorkspaceFileReference {
 export async function openWorkspaceFileReference(
   reference: OpenableWorkspaceFileReference,
   scopeKey: string,
-  openResource: (resource: FileBrowserWorkspaceResource) => unknown,
+  openResource: (resource: RightWorkspaceResource) => unknown,
   currentRoot: WorkspaceRootRef | null,
 ) {
+  if (reference.source?.kind === 'artifact') {
+    const { locator, name } = reference.source;
+    await openResource({ kind: 'conversation-asset', assetKind: 'artifact', locator, name,
+      key: conversationAssetWorkspaceResourceKey('artifact', locator, name), scopeKey,
+      title: reference.name ?? name, attention: false });
+    return;
+  }
+  const fixedSource = reference.source && reference.source.kind !== 'workspace' ? reference.source : undefined;
+  let sourceRoot: WorkspaceRootRef | null = null;
+  if (fixedSource) {
+    const target = await resolveRightWorkspaceFileTarget(fixedSource);
+    if (target.availability.kind !== 'available') throw target.availability;
+    // Opening the explicitly selected file may grant access to that exact file;
+    // the directory tab continues to project the receiving session's root.
+    reference = { ...reference, projectId: target.projectId,
+      relativePath: target.relativePath ?? target.name, canonicalPath: target.absolutePath ?? undefined };
+    sourceRoot = workspaceRootRef(target.projectId, target.workspacePath);
+  }
   const fileBrowser = {
     kind: 'file-browser' as const,
     key: fileBrowserWorkspaceResourceKey(reference.projectId),
@@ -81,11 +113,11 @@ export async function openWorkspaceFileReference(
     browseMain: false,
   };
   const fallbackName = reference.name ?? reference.relativePath.split('/').at(-1) ?? reference.relativePath;
-  if (!currentRoot) {
+  if (!sourceRoot && !currentRoot) {
     await openResource({ ...fileBrowser, title: fallbackName, description: reference.relativePath, selectedFile: null });
     return;
   }
-  const root = currentRoot.projectId === reference.projectId ? currentRoot : workspaceRootRef(reference.projectId, null);
+  const root = sourceRoot ?? (currentRoot?.projectId === reference.projectId ? currentRoot : workspaceRootRef(reference.projectId, null));
   const resolved = await resolveWorkspaceFileLink(
     root,
     reference.canonicalPath ?? reference.relativePath,
@@ -115,6 +147,7 @@ export async function openWorkspaceFileReference(
       attention: false,
       projectId: reference.projectId,
       workspacePath: root.workspacePath,
+      source: fixedSource,
       locator: resolved.locator,
       target: null,
       targetRevision: Date.now(),

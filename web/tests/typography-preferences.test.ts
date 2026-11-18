@@ -19,7 +19,7 @@ describe('desktop typography preferences', () => {
     expect(normalizeTypographySize(Number.NaN, 'ui')).toBe(14);
   });
 
-  it.each(['gold-band', 'tech-neutral'])('defaults %s editor text to 13px in both color schemes', (theme) => {
+  it.each(['gold-band', 'tech-neutral', 'vista'])('defaults %s editor text to 13px in both color schemes', (theme) => {
     const presets = JSON.parse(fs.readFileSync(path.resolve(__dirname, `../../themes/${theme}/presets.json`), 'utf8'));
     for (const scheme of ['light', 'dark']) {
       expect(presets[scheme].typography.editorSize).toBe(13);
@@ -51,7 +51,9 @@ describe('desktop typography preferences', () => {
     vi.stubGlobal('document', { documentElement: { dataset: {}, style: { setProperty } } });
 
     applyPersonalization({
-      schemaVersion: 4,
+      schemaVersion: 5,
+      interfaceZoomPercent: 100,
+      workflowGraphDirection: 'auto',
       typography: {
         ui: { fontStack: { source: 'theme' }, fontSize: { source: 'custom', px: 15.6 } },
         editor: { fontStack: { source: 'custom', families: ['Fira Code', 'Consolas'] }, fontSize: { source: 'custom', px: 30 } },

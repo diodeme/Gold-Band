@@ -1,4 +1,5 @@
-import type { ConversationPromptInput, UserPromptQuote, UserPromptQuoteSource, UserPromptRole } from '@/types';
+import type { ConversationPromptInput, PromptWorkspaceFileRef, UserPromptQuote, UserPromptQuoteSource, UserPromptRole } from '@/types';
+import { fileReferenceIdentity, parseFileReferenceSource } from './file-reference-source';
 import type { CommittedSlashItem } from '@/lib/slash-command';
 import { committedRoleSnapshot, slashSendableText } from '@/lib/slash-command';
 
@@ -15,15 +16,18 @@ export type ComposerQuoteDraft = Omit<ComposerQuote, 'id'>;
 
 export interface ComposerWorkspaceFileRef {
   id: string;
+  source: PromptWorkspaceFileRef;
   projectId: string;
   relativePath: string;
   name: string;
   byteLength: number | null;
   mimeType: string;
   canonicalPath?: string;
+  unavailable?: boolean;
 }
 
 export interface WorkspaceFileTimelineRef {
+  source: PromptWorkspaceFileRef;
   projectId: string;
   relativePath: string;
   canonicalPath?: string;
@@ -116,10 +120,7 @@ export function createUserPromptSubmission(
   return {
     displayText,
     quotes: quotes.map(({ id, text, source }) => ({ id, text, source })),
-    workspaceFiles: workspaceFiles.map(({ projectId, relativePath }) => ({
-      projectId,
-      relativePath,
-    })),
+    workspaceFiles: workspaceFiles.map(({ source }) => source),
     ...(role ? { role } : {}),
   };
 }
@@ -141,18 +142,14 @@ export function createComposerPromptSubmission(
 export function normalizeComposerWorkspaceFileRef(ref: ComposerWorkspaceFileRef): ComposerWorkspaceFileRef {
   return {
     ...ref,
+    source: ref.source.kind === 'workspace' || ref.source.kind === 'git-file'
+      ? { ...ref.source, relativePath: ref.source.relativePath.replaceAll('\\', '/') } : ref.source,
     relativePath: ref.relativePath.replaceAll('\\', '/'),
   };
 }
 
 function composerWorkspaceFileIdentity(ref: ComposerWorkspaceFileRef) {
-  const projectId = ref.projectId.trim().toLowerCase();
-  const relativePath = ref.relativePath.replaceAll('\\', '/');
-  const platform = globalThis.navigator?.platform ?? '';
-  const normalizedPath = /win/i.test(platform)
-    ? relativePath.toLowerCase()
-    : relativePath;
-  return `${projectId}\0${normalizedPath}`;
+  return fileReferenceIdentity(ref.source);
 }
 
 export function addComposerWorkspaceFile(
@@ -162,7 +159,11 @@ export function addComposerWorkspaceFile(
 ): { ok: true; workspaceFiles: ComposerWorkspaceFileRef[] } | { ok: false; code: 'composer.context.limit-exceeded'; max: number } | { ok: false; code: 'composer.workspace-file.duplicate' } {
   const normalized = normalizeComposerWorkspaceFileRef(ref);
   const identity = composerWorkspaceFileIdentity;
-  if (workspaceFiles.some((item) => identity(item) === identity(normalized))) {
+  const pathIdentity = (path: string) => /win/i.test(globalThis.navigator?.platform ?? '')
+    ? path.replaceAll('\\', '/').toLowerCase() : path.replaceAll('\\', '/');
+  if (workspaceFiles.some((item) => identity(item) === identity(normalized)
+    || (item.canonicalPath && normalized.canonicalPath
+      && pathIdentity(item.canonicalPath) === pathIdentity(normalized.canonicalPath)))) {
     return { ok: false, code: 'composer.workspace-file.duplicate' };
   }
   if (workspaceFiles.length + attachmentCount >= MAX_COMPOSER_CONTEXT_ITEMS) {
@@ -189,12 +190,14 @@ export function workspaceFilesFromRaw(raw: unknown): WorkspaceFileTimelineRef[] 
   if (!Array.isArray(files)) return [];
   return files.flatMap((file): WorkspaceFileTimelineRef[] => {
     if (!file || typeof file !== 'object') return [];
-    const { projectId, relativePath, canonicalPath, name, mimeType, size } = file as Record<string, unknown>;
-    return typeof projectId === 'string'
+    const { source: rawSource, projectId, relativePath, canonicalPath, name, mimeType, size } = file as Record<string, unknown>;
+    const source = parseFileReferenceSource(rawSource);
+    return source && typeof projectId === 'string'
       && projectId.length > 0
       && typeof relativePath === 'string'
       && relativePath.length > 0
       ? [{
+        source,
         projectId,
         relativePath,
         ...(typeof canonicalPath === 'string' ? { canonicalPath } : {}),

@@ -22,6 +22,24 @@ import { desktopApi } from '../../src/api/desktop';
 import { invokeCommand } from '../../src/api/shared';
 
 describe('desktopApi', () => {
+  it('submits a failed-node rerun with its complete historical locator', async () => {
+    const request = { projectId: 'project-1', taskId: 'task-1', runId: 'run-1', expectedRoundId: 'round-1', expectedNodeId: 'worker', expectedAttemptId: 'attempt-001' };
+    await desktopApi.rerunFailedNode(request);
+    expect(invokeCommand).toHaveBeenCalledWith('rerun_failed_node', request);
+  });
+  it('passes a controlled file source to metadata and reveal without sending a local absolute path', async () => {
+    const source = { kind: 'git-file' as const, projectId: 'project-a', workspacePath: null, relativePath: 'src/a.ts' };
+    await desktopApi.resolveRightWorkspaceFileTarget(source);
+    await desktopApi.revealRightWorkspaceFile(source);
+    expect(invokeCommand).toHaveBeenCalledWith('resolve_right_workspace_file_target', { source });
+    expect(invokeCommand).toHaveBeenCalledWith('reveal_right_workspace_file', { source });
+  });
+  it('reads only the selected conversation summary with its canonical identity', async () => {
+    await desktopApi.getConversationTaskSummary('project-a', 'task-001', 'uuid-a');
+    expect(invokeCommand).toHaveBeenCalledWith('get_conversation_task_summary', {
+      projectId: 'project-a', taskId: 'task-001', taskUuid: 'uuid-a',
+    });
+  });
   beforeEach(() => {
     vi.mocked(invokeCommand).mockClear();
     openerMocks.openUrl.mockClear();
@@ -100,6 +118,26 @@ describe('desktopApi', () => {
       attemptId: 'attempt-1',
       outerNodeId: null,
       outerAttemptId: null,
+    });
+  });
+
+  it('passes the complete canonical locator to the current-node retry command', async () => {
+    await desktopApi.retryCurrentNode({
+      projectId: 'project-1',
+      taskId: 'task-1',
+      runId: 'run-1',
+      expectedRoundId: 'round-1',
+      expectedNodeId: 'node-1',
+      expectedAttemptId: 'attempt-1',
+    });
+
+    expect(invokeCommand).toHaveBeenCalledWith('retry_current_node', {
+      projectId: 'project-1',
+      taskId: 'task-1',
+      runId: 'run-1',
+      expectedRoundId: 'round-1',
+      expectedNodeId: 'node-1',
+      expectedAttemptId: 'attempt-1',
     });
   });
 
@@ -301,6 +339,12 @@ describe('desktopApi', () => {
     expect(invokeCommand).toHaveBeenCalledWith('get_conversation_pinned_task_page', {
       cursor: 'pin-24',
       limit: 24,
+    });
+
+    await desktopApi.getConversationRecentTaskPage('recent-10', 10);
+    expect(invokeCommand).toHaveBeenCalledWith('get_conversation_recent_task_page', {
+      cursor: 'recent-10',
+      limit: 10,
     });
 
     await desktopApi.getConversationRunSummaryPage('project-1', 'task-1', 'run-20', 20);

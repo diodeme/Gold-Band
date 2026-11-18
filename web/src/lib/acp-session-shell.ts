@@ -185,14 +185,14 @@ export function missingAcpSessionRetryDelay(attempt: number) {
 }
 
 export interface AcpInitialSessionRetryExhaustedInput {
-  runtimeActive: boolean;
+  initializationActive: boolean;
   hasLoadError: boolean;
 }
 
 export function shouldKeepAcpInitialSessionLoadingAfterRetryExhausted(
   input: AcpInitialSessionRetryExhaustedInput,
 ) {
-  return input.runtimeActive && !input.hasLoadError;
+  return input.initializationActive && !input.hasLoadError;
 }
 
 export interface AcpSessionMetadataInput {

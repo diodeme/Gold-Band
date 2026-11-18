@@ -952,8 +952,14 @@ fn is_same_connection_generation<T>(
 }
 
 #[derive(Debug, Clone)]
-pub struct AdapterInitializationOutcome {
+pub struct AdapterInitializationData {
     pub capabilities: Value,
+    pub auth_methods: Vec<Value>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AdapterInitializationOutcome {
+    pub data: AdapterInitializationData,
     pub performed: bool,
 }
 
@@ -1011,6 +1017,7 @@ pub struct AdapterConnection {
     generation: u64,
     last_activity_at: Mutex<Instant>,
     session_config_transaction: SessionConfigTransaction,
+    authentication_transaction: AuthenticationTransaction,
     state: Mutex<AdapterConnectionState>,
     exit_status_logged: AtomicBool,
     stderr_noise_counts: Mutex<BTreeMap<&'static str, u64>>,
@@ -1088,6 +1095,106 @@ struct SessionConfigTransaction {
 }
 
 #[derive(Debug, Default)]
+struct AuthenticationTransaction {
+    state: Mutex<AuthenticationTransactionState>,
+    changed: Condvar,
+}
+
+#[derive(Debug, Default)]
+struct AuthenticationTransactionState {
+    revision: u64,
+    phase: AuthenticationTransactionPhase,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum AuthenticationTransactionPhase {
+    #[default]
+    Idle,
+    InProgress,
+    Complete,
+}
+
+struct AuthenticationAttempt<'a> {
+    transaction: &'a AuthenticationTransaction,
+    settled: bool,
+}
+
+impl Drop for AuthenticationAttempt<'_> {
+    fn drop(&mut self) {
+        if self.settled {
+            return;
+        }
+        if let Ok(mut state) = self.transaction.state.lock()
+            && state.phase == AuthenticationTransactionPhase::InProgress
+        {
+            state.phase = AuthenticationTransactionPhase::Idle;
+        }
+        self.transaction.changed.notify_all();
+    }
+}
+
+impl AuthenticationTransaction {
+    fn revision(&self) -> Result<u64> {
+        self.state
+            .lock()
+            .map(|state| state.revision)
+            .map_err(|_| anyhow!("ACP authentication transaction lock poisoned"))
+    }
+
+    /// Runs one connection-scoped authentication at a time. A caller whose
+    /// session/new began before another caller finished a successful
+    /// authentication skips its duplicate request and retries session/new.
+    fn authenticate_once(
+        &self,
+        observed_revision: u64,
+        authenticate: impl FnOnce() -> Result<()>,
+    ) -> Result<bool> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("ACP authentication transaction lock poisoned"))?;
+        loop {
+            match state.phase {
+                AuthenticationTransactionPhase::Complete if state.revision > observed_revision => {
+                    return Ok(false);
+                }
+                AuthenticationTransactionPhase::InProgress => {
+                    state = self
+                        .changed
+                        .wait(state)
+                        .map_err(|_| anyhow!("ACP authentication transaction lock poisoned"))?;
+                }
+                AuthenticationTransactionPhase::Idle | AuthenticationTransactionPhase::Complete => {
+                    state.revision = state.revision.saturating_add(1);
+                    state.phase = AuthenticationTransactionPhase::InProgress;
+                    break;
+                }
+            }
+        }
+        drop(state);
+
+        let mut attempt = AuthenticationAttempt {
+            transaction: self,
+            settled: false,
+        };
+        let result = authenticate();
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("ACP authentication transaction lock poisoned"))?;
+        state.phase = if result.is_ok() {
+            AuthenticationTransactionPhase::Complete
+        } else {
+            AuthenticationTransactionPhase::Idle
+        };
+        attempt.settled = true;
+        drop(state);
+        self.changed.notify_all();
+        result.map(|()| true)
+    }
+}
+
+#[derive(Debug, Default)]
 struct ConnectionInitialization {
     state: Mutex<ConnectionInitializationState>,
     changed: Condvar,
@@ -1098,7 +1205,7 @@ enum ConnectionInitializationState {
     #[default]
     Uninitialized,
     Initializing,
-    Initialized(Value),
+    Initialized(AdapterInitializationData),
     Failed,
 }
 
@@ -1124,7 +1231,7 @@ impl Drop for ConnectionInitializationAttempt<'_> {
 impl ConnectionInitialization {
     fn capabilities(&self) -> Option<Value> {
         self.state.lock().ok().and_then(|state| match &*state {
-            ConnectionInitializationState::Initialized(capabilities) => Some(capabilities.clone()),
+            ConnectionInitializationState::Initialized(data) => Some(data.capabilities.clone()),
             ConnectionInitializationState::Uninitialized
             | ConnectionInitializationState::Initializing
             | ConnectionInitializationState::Failed => None,
@@ -1133,7 +1240,7 @@ impl ConnectionInitialization {
 
     fn initialize_once(
         &self,
-        initialize: impl FnOnce() -> Result<Value>,
+        initialize: impl FnOnce() -> Result<AdapterInitializationData>,
     ) -> Result<AdapterInitializationOutcome> {
         let mut state = self
             .state
@@ -1141,9 +1248,9 @@ impl ConnectionInitialization {
             .map_err(|_| anyhow!("ACP connection initialization lock poisoned"))?;
         loop {
             match &*state {
-                ConnectionInitializationState::Initialized(capabilities) => {
+                ConnectionInitializationState::Initialized(data) => {
                     return Ok(AdapterInitializationOutcome {
-                        capabilities: capabilities.clone(),
+                        data: data.clone(),
                         performed: false,
                     });
                 }
@@ -1169,17 +1276,17 @@ impl ConnectionInitialization {
             settled: false,
         };
         match initialize() {
-            Ok(capabilities) => {
+            Ok(data) => {
                 let mut state = self
                     .state
                     .lock()
                     .map_err(|_| anyhow!("ACP connection initialization lock poisoned"))?;
-                *state = ConnectionInitializationState::Initialized(capabilities.clone());
+                *state = ConnectionInitializationState::Initialized(data.clone());
                 attempt.settled = true;
                 drop(state);
                 self.changed.notify_all();
                 Ok(AdapterInitializationOutcome {
-                    capabilities,
+                    data,
                     performed: true,
                 })
             }
@@ -1277,6 +1384,7 @@ impl AdapterConnection {
             generation: NEXT_CONNECTION_GENERATION.fetch_add(1, Ordering::Relaxed),
             last_activity_at: Mutex::new(Instant::now()),
             session_config_transaction: SessionConfigTransaction::default(),
+            authentication_transaction: AuthenticationTransaction::default(),
             state: Mutex::new(AdapterConnectionState::Open),
             exit_status_logged: AtomicBool::new(false),
             stderr_noise_counts: Mutex::new(BTreeMap::new()),
@@ -1331,6 +1439,19 @@ impl AdapterConnection {
 
     pub(crate) fn lock_session_config_transaction(&self) -> Result<MutexGuard<'_, ()>> {
         self.session_config_transaction.lock()
+    }
+
+    pub(crate) fn authentication_revision(&self) -> Result<u64> {
+        self.authentication_transaction.revision()
+    }
+
+    pub(crate) fn authenticate_once(
+        &self,
+        observed_revision: u64,
+        authenticate: impl FnOnce() -> Result<()>,
+    ) -> Result<bool> {
+        self.authentication_transaction
+            .authenticate_once(observed_revision, authenticate)
     }
 
     pub fn pid(&self) -> u32 {
@@ -1414,7 +1535,7 @@ impl AdapterConnection {
 
     pub fn initialize_once(
         &self,
-        initialize: impl FnOnce() -> Result<Value>,
+        initialize: impl FnOnce() -> Result<AdapterInitializationData>,
     ) -> Result<AdapterInitializationOutcome> {
         self.initialization.initialize_once(initialize)
     }
@@ -3227,16 +3348,17 @@ mod tests {
 
     use super::{
         AcpConnectionUnavailable, ActivePromptTracker, AdapterConnectionKey,
-        AdapterConnectionManager, AdapterConnectionState, AdapterStderrKind,
-        AttemptSessionUnregisterOutcome, ConnectionCreationGate, ConnectionInitialization,
-        EarlySessionFrames, JSONRPC_METHOD_NOT_FOUND_CODE, STDERR_FAILURE_MAX_CHARS,
-        STDERR_LINE_MAX_BYTES, SessionConfigTransaction, SessionEventPump,
-        SessionRouteTryRecvError, append_failure_stderr_text, classify_adapter_stderr,
-        connection_lifecycle_uses_info, is_expected_unrouted_notification,
-        is_same_connection_generation, persist_cancelled_session_snapshot, read_stderr,
-        record_unrouted_warning, register_session_route_state, request_unavailability,
-        route_or_buffer_session_frame, select_provider_connection_keys, session_id_from_frame,
-        session_route_pair, settle_attempt_for_session_close, should_emit_adapter_exit_status,
+        AdapterConnectionManager, AdapterConnectionState, AdapterInitializationData,
+        AdapterStderrKind, AttemptSessionUnregisterOutcome, AuthenticationTransaction,
+        ConnectionCreationGate, ConnectionInitialization, EarlySessionFrames,
+        JSONRPC_METHOD_NOT_FOUND_CODE, STDERR_FAILURE_MAX_CHARS, STDERR_LINE_MAX_BYTES,
+        SessionConfigTransaction, SessionEventPump, SessionRouteTryRecvError,
+        append_failure_stderr_text, classify_adapter_stderr, connection_lifecycle_uses_info,
+        is_expected_unrouted_notification, is_same_connection_generation,
+        persist_cancelled_session_snapshot, read_stderr, record_unrouted_warning,
+        register_session_route_state, request_unavailability, route_or_buffer_session_frame,
+        select_provider_connection_keys, session_id_from_frame, session_route_pair,
+        settle_attempt_for_session_close, should_emit_adapter_exit_status,
         unregister_session_route_state, unsupported_client_inbound_reply,
     };
 
@@ -3433,7 +3555,14 @@ mod tests {
                     .initialize_once(|| {
                         calls.fetch_add(1, Ordering::SeqCst);
                         thread::sleep(Duration::from_millis(30));
-                        Ok(json!({ "loadSession": true }))
+                        Ok(AdapterInitializationData {
+                            capabilities: json!({ "loadSession": true }),
+                            auth_methods: vec![json!({
+                                "type": "env_var",
+                                "id": "token",
+                                "vars": [{"name": "ACP_AUTH_TOKEN"}]
+                            })],
+                        })
                     })
                     .unwrap()
             }));
@@ -3452,8 +3581,44 @@ mod tests {
         assert!(
             outcomes
                 .iter()
-                .all(|outcome| outcome.capabilities == json!({ "loadSession": true }))
+                .all(|outcome| outcome.data.capabilities == json!({ "loadSession": true }))
         );
+        for outcome in outcomes {
+            assert_eq!(
+                outcome.data.auth_methods,
+                vec![json!({
+                    "type": "env_var",
+                    "id": "token",
+                    "vars": [{"name": "ACP_AUTH_TOKEN"}]
+                })]
+            );
+        }
+    }
+
+    #[test]
+    fn later_callers_receive_the_complete_cached_initialization_result() {
+        let initialization = ConnectionInitialization::default();
+        let expected_capabilities = json!({"loadSession": true});
+        let expected_methods = vec![json!({"type": "terminal", "id": "login"})];
+        let first = initialization
+            .initialize_once(|| {
+                Ok(AdapterInitializationData {
+                    capabilities: expected_capabilities.clone(),
+                    auth_methods: expected_methods.clone(),
+                })
+            })
+            .unwrap();
+        let cached = initialization
+            .initialize_once(|| panic!("an initialized connection must not initialize twice"))
+            .unwrap();
+
+        assert!(first.performed);
+        assert!(!cached.performed);
+        assert_eq!(first.data.capabilities, expected_capabilities);
+        assert_eq!(cached.data.capabilities, expected_capabilities);
+        assert_eq!(first.data.auth_methods, expected_methods);
+        assert_eq!(cached.data.auth_methods, expected_methods);
+        assert_eq!(initialization.capabilities(), Some(expected_capabilities));
     }
 
     #[test]
@@ -3597,10 +3762,16 @@ mod tests {
 
         let replacement_initialization = ConnectionInitialization::default();
         let second = replacement_initialization
-            .initialize_once(|| Ok(json!({ "resumeSession": true })))
+            .initialize_once(|| {
+                Ok(AdapterInitializationData {
+                    capabilities: json!({ "resumeSession": true }),
+                    auth_methods: Vec::new(),
+                })
+            })
             .unwrap();
         assert!(second.performed);
-        assert_eq!(second.capabilities, json!({ "resumeSession": true }));
+        assert_eq!(second.data.capabilities, json!({ "resumeSession": true }));
+        assert!(second.data.auth_methods.is_empty());
     }
 
     #[test]
@@ -3632,7 +3803,10 @@ mod tests {
                 .initialize_once(|| {
                     initialize_started_tx.send(()).unwrap();
                     release_initialize_rx.recv().unwrap();
-                    Ok(json!({ "loadSession": true }))
+                    Ok(AdapterInitializationData {
+                        capabilities: json!({ "loadSession": true }),
+                        auth_methods: Vec::new(),
+                    })
                 })
                 .unwrap();
             if !a_cancelled.load(Ordering::SeqCst) {
@@ -3725,6 +3899,37 @@ mod tests {
         entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         waiter.join().unwrap();
     }
+    #[test]
+    fn shared_connection_authentication_is_single_flight() {
+        let transaction = Arc::new(AuthenticationTransaction::default());
+        let observed = transaction.revision().unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let first_transaction = Arc::clone(&transaction);
+        let first = thread::spawn(move || {
+            first_transaction.authenticate_once(observed, || {
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(())
+            })
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first authentication must start");
+
+        let second_transaction = Arc::clone(&transaction);
+        let second = thread::spawn(move || {
+            second_transaction.authenticate_once(observed, || {
+                panic!("a concurrent runtime must not authenticate twice");
+            })
+        });
+        thread::sleep(Duration::from_millis(50));
+        release_tx.send(()).unwrap();
+
+        assert!(first.join().unwrap().unwrap());
+        assert!(!second.join().unwrap().unwrap());
+    }
+
     use crate::{
         acp::{
             elicitation::{

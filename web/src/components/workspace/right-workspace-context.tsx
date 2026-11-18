@@ -100,6 +100,8 @@ export type FileWorkspaceResource = RightWorkspaceResourceBase & {
   projectId: string;
   /** Root the file was resolved in; `null` is the project root. */
   workspacePath: string | null;
+  /** Explicit file provenance is independent of the receiving session's directory. */
+  source?: Extract<import('@/types').PromptWorkspaceFileRef, { kind: 'git-file' | 'turn-file' | 'turn-attachment' }>;
   locator: import('@/types').WorkspaceFileLocatorVm;
   target: import('@/types').FileTargetLocationVm | null;
   targetRevision: number;
@@ -255,6 +257,7 @@ interface RightWorkspaceContextValue extends RightWorkspaceState {
   closeWorkspace: () => void | Promise<void>;
   setWidth: (width: number) => void;
   renderResource: (resource: RightWorkspaceResource) => ReactNode;
+  refreshResourceRenderers: () => void;
   projectId: string | null;
   conversationDirectoryEntry: ConversationDirectoryWorkspaceEntry | null;
   setConversationDirectoryEntry: (entry: ConversationDirectoryWorkspaceEntry | null) => void;
@@ -754,6 +757,9 @@ export function RightWorkspaceProvider({
     if (commit({ type: 'synchronize', resource })) render();
   }, [commit]);
   const renderResource = useCallback((resource: RightWorkspaceResource) => rendererRegistryRef.current.get(resource.kind)?.(resource) ?? null, []);
+  const refreshResourceRenderers = useCallback(() => {
+    renderRenderer();
+  }, []);
   const registerResourceRenderer = useCallback((kind: RightWorkspaceResourceKind, renderer: RightWorkspaceResourceRenderer) => {
     rendererRegistryRef.current.set(kind, renderer);
     renderRenderer();
@@ -783,9 +789,10 @@ export function RightWorkspaceProvider({
     closeWorkspace,
     setWidth,
     renderResource,
+    refreshResourceRenderers,
     registerResourceRenderer,
     registerResourceCloseResolver,
-  }), [activateTab, closeTab, closeWorkspace, conversationDirectoryEntry, openResource, openWorkspace, registerResourceCloseResolver, registerResourceRenderer, renderResource, rendererRevision, scope?.key, scope?.projectId, sessionState, setConversationDirectoryEntry, setWidth, shellState]);
+  }), [activateTab, closeTab, closeWorkspace, conversationDirectoryEntry, openResource, openWorkspace, refreshResourceRenderers, registerResourceCloseResolver, registerResourceRenderer, renderResource, rendererRevision, scope?.key, scope?.projectId, sessionState, setConversationDirectoryEntry, setWidth, shellState]);
   const commands = useMemo<RightWorkspaceCommands>(() => ({
     scopeKey: scope?.key ?? null,
     projectId: scope?.projectId ?? null,
@@ -876,6 +883,7 @@ export function projectWorkspaceTabRoots(
     changed = true;
     if (tab.kind === 'source-control') return { ...tab, root, browseMain };
     const selectedFile = tab.selectedFile
+      && !tab.selectedFile.source
       && root.kind === 'available'
       && !sameWorkspacePath(tab.selectedFile.workspacePath, root.workspacePath)
       ? null

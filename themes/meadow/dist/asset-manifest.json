@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 2,
+  "count": 2,
+  "totalBytes": 3680142,
+  "records": [
+    {
+      "id": "meadow-bamboo-dark",
+      "kind": "wallpaper",
+      "mediaType": "image/webp",
+      "bytes": 2097758,
+      "sha256": "0aa70c707fa3fcdb8992fef96365bbf5c5ae7c01bc9cab356d1b2bfd3ed7ed30",
+      "outputUrl": "/theme-assets/builtin.meadow/0aa70c707fa3fcdb-meadow-bamboo-dark.webp",
+      "required": true,
+      "licenseId": "meadow-inhouse",
+      "width": 2048,
+      "height": 1280
+    },
+    {
+      "id": "meadow-kite-light",
+      "kind": "wallpaper",
+      "mediaType": "image/webp",
+      "bytes": 1582384,
+      "sha256": "9093305581d4d8d751be150d2560743a93e5530ca9206e22b16ff5be13c36894",
+      "outputUrl": "/theme-assets/builtin.meadow/9093305581d4d8d7-meadow-kite-light.webp",
+      "required": true,
+      "licenseId": "meadow-inhouse",
+      "width": 2048,
+      "height": 1280
+    }
+  ]
+}

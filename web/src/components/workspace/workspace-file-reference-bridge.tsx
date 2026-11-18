@@ -64,6 +64,7 @@ interface WorkspaceFileReferenceBridgeValue {
 
 interface WorkspaceFileReferenceCommandsValue {
   available: boolean;
+  captureFileReferenceTarget: () => AddWorkspaceFileRefCommand | null;
   addWorkspaceFileRef: AddWorkspaceFileRefCommand;
   addQuote: AddQuoteCommand;
 }
@@ -109,6 +110,11 @@ export function useWorkspaceFileReferenceBridgeState() {
   }, [targetRef]);
   const commands = useMemo<WorkspaceFileReferenceCommandsValue>(() => ({
     available,
+    captureFileReferenceTarget: () => {
+      const target = targetRef.current;
+      return target ? (reference, options) => targetRef.current === target
+        ? target.addWorkspaceFileRef(reference, options) : { kind: 'unavailable' } : null;
+    },
     addWorkspaceFileRef: (reference, options) =>
       targetRef.current?.addWorkspaceFileRef(reference, options) ?? { kind: 'unavailable' },
     addQuote: (quote, options) =>

@@ -32,20 +32,23 @@ import {
   NODE_HEIGHT,
   TERMINAL_NODE_HEIGHT,
   collectAuthoringNodes,
-  edgeLabelWidth,
   entryAnchoredViewport,
   newRoundEntryNodeId,
   terminalNodeWidth,
   workflowSuccessTopologyOrder,
   isBackwardEdge,
   authoringEdgeColor,
-  SOURCE_POS,
-  TARGET_POS,
+  workflowHandlePositions,
   type WorkflowLayout,
+  type WorkflowLayoutDirection,
   type WorkflowLayoutRoute,
   type WorkflowLayoutSpec,
 } from './workflowGraph';
 import { useWorkflowLayout } from '@/hooks/useWorkflowLayout';
+import {
+  resolveWorkflowLayoutDirection,
+  useWorkflowGraphDirectionPreference,
+} from '@/components/workflow-direction-preference';
 import { WorkflowLayoutStatus } from '@/components/WorkflowLayoutStatus';
 import { AppCard } from '@/components/AppCard';
 import {
@@ -109,6 +112,7 @@ type EditorNodeData = {
   kind: string;
   terminal?: boolean;
   targetPosition?: Position;
+  sourcePosition?: Position;
   iconKey?: string;
   entryCandidate?: boolean;
   entryLabel?: string;
@@ -140,7 +144,10 @@ const WORKFLOW_EDITOR_MAX_ZOOM = 1.4;
 const WORKFLOW_EDITOR_FIT_MAX_ZOOM = 0.92;
 const WORKFLOW_EDITOR_FIT_PADDING = 0.22;
 const WORKFLOW_EDITOR_DRAFT_DELAY_MS = 180;
-const WORKFLOW_NODE_SINGLE_OUTCOME_TOP = '50%';
+// Single-outcome exits share the split success lane (34%) so mixed chains
+// stay visually on one track: node columns, straight edges, and handle dots
+// all align on the same fraction (workflowTargetHandleRatio).
+const WORKFLOW_NODE_SINGLE_OUTCOME_TOP = '34%';
 const WORKFLOW_NODE_SPLIT_OUTCOME_TOP = { success: '34%', failure: '66%' } as const;
 
 export type WorkflowEditorHistory = { past: WorkflowDsl[]; future: WorkflowDsl[] };
@@ -341,13 +348,19 @@ function AgentSelectItemContent({ agent, unavailableLabel }: { agent: ManagedAge
 
 function EditorCanvasNode({ id, data }: NodeProps<Node<EditorNodeData>>) {
   const updateNodeInternals = useUpdateNodeInternals();
+  // Handle offsets run along the node's cross axis: vertical flows mirror the
+  // outcome ratios from `top` percentages to `left` percentages.
+  const vertical = data.sourcePosition === Position.Bottom;
   useEffect(() => {
     updateNodeInternals(id);
-  }, [data.supportsFailureOutcome, id, updateNodeInternals]);
+  }, [data.sourcePosition, data.supportsFailureOutcome, data.targetPosition, id, updateNodeInternals]);
   if (data.terminal) {
+    const terminalHandleStyle = vertical
+      ? { left: WORKFLOW_NODE_SINGLE_OUTCOME_TOP }
+      : { top: WORKFLOW_NODE_SINGLE_OUTCOME_TOP };
     return (
       <div data-theme-role="workflow-node" className="flex size-full items-center justify-center rounded-full border border-dashed border-border/80 bg-muted/20 px-3 text-xs tracking-wide text-muted-foreground">
-        <Handle type="target" position={data.targetPosition ?? Position.Left} className="!size-2 !border-2 !border-card !bg-muted-foreground" />
+        <Handle type="target" position={data.targetPosition ?? Position.Left} className="!size-2 !border-2 !border-card !bg-muted-foreground" style={terminalHandleStyle} />
         <Tooltip>
           <TooltipTrigger asChild>
             <span className="min-w-0 truncate">{data.label}</span>
@@ -357,7 +370,9 @@ function EditorCanvasNode({ id, data }: NodeProps<Node<EditorNodeData>>) {
       </div>
     );
   }
-  const successHandleTop = data.supportsFailureOutcome ? WORKFLOW_NODE_SPLIT_OUTCOME_TOP.success : WORKFLOW_NODE_SINGLE_OUTCOME_TOP;
+  const successHandleOffset = data.supportsFailureOutcome ? WORKFLOW_NODE_SPLIT_OUTCOME_TOP.success : WORKFLOW_NODE_SINGLE_OUTCOME_TOP;
+  const successHandleStyle = vertical ? { left: successHandleOffset } : { top: successHandleOffset };
+  const failureHandleStyle = vertical ? { left: WORKFLOW_NODE_SPLIT_OUTCOME_TOP.failure } : { top: WORKFLOW_NODE_SPLIT_OUTCOME_TOP.failure };
   return (
       <div data-theme-role="workflow-node" data-selected={data.selected} className="relative flex size-full flex-col items-center justify-center gap-1 border border-border bg-card px-3 py-2">
       <NodeToolbar isVisible={data.selected} position={Position.Bottom} offset={10} className="flex items-center gap-1 rounded-lg border bg-popover p-1 text-popover-foreground shadow-md">
@@ -396,17 +411,17 @@ function EditorCanvasNode({ id, data }: NodeProps<Node<EditorNodeData>>) {
         </Badge>
       ) : null}
       {/* Shares the primary source handle height so success chains stay on one row (workflowTargetHandleRatio). */}
-      <Handle type="target" position={Position.Left} className="!size-2 !border-2 !border-card !bg-muted-foreground" style={{ top: successHandleTop }} />
+      <Handle type="target" position={data.targetPosition ?? Position.Left} className="!size-2 !border-2 !border-card !bg-muted-foreground" style={successHandleStyle} />
       <Tooltip>
         <TooltipTrigger asChild>
-          <Handle id="success" type="source" position={Position.Right} className="workflow-handle-success !size-2.5 !border-2 !border-card !bg-emerald-500" style={{ top: successHandleTop }} />
+          <Handle id="success" type="source" position={data.sourcePosition ?? Position.Right} className="workflow-handle-success !size-2.5 !border-2 !border-card !bg-emerald-500" style={successHandleStyle} />
         </TooltipTrigger>
         <TooltipContent>{data.successLabel}</TooltipContent>
       </Tooltip>
       {data.supportsFailureOutcome ? (
         <Tooltip>
           <TooltipTrigger asChild>
-            <Handle id="failure" type="source" position={Position.Right} className="workflow-handle-failure !size-2.5 !border-2 !border-card !bg-destructive" style={{ top: WORKFLOW_NODE_SPLIT_OUTCOME_TOP.failure }} />
+            <Handle id="failure" type="source" position={data.sourcePosition ?? Position.Right} className="workflow-handle-failure !size-2.5 !border-2 !border-card !bg-destructive" style={failureHandleStyle} />
           </TooltipTrigger>
           <TooltipContent>{data.failureLabel}</TooltipContent>
         </Tooltip>
@@ -473,6 +488,51 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
   const [isCompact, setIsCompact] = useState(false);
   const [viewportRevision, setViewportRevision] = useState(0);
   const [historyRevision, setHistoryRevision] = useState(0);
+  const { preference: directionPreference, setPreference: setDirectionPreference } = useWorkflowGraphDirectionPreference();
+  // Locked preferences seed the direction immediately so a vertical graph never
+  // pays a wasted horizontal first layout plus a refit (GraphView seeding
+  // contract); `auto` resolves once the canvas is measured by the effect below.
+  const [layoutDirection, setLayoutDirection] = useState<WorkflowLayoutDirection>(() =>
+    directionPreference === 'vertical' ? 'DOWN' : 'RIGHT');
+  const layoutDirectionRef = useRef<WorkflowLayoutDirection>(layoutDirection);
+  // Fullscreen editing lifts the editor container into a viewport-level app
+  // overlay: tabs, canvas toolbars, and inspector all travel into fullscreen
+  // together, and the live editing state is never duplicated into a second
+  // editor instance (the runtime graphs use a dialog because they are
+  // stateless views). The element Fullscreen API is deliberately not used:
+  // WebKitGTK maps it to a WM window-state change (the compositor transition
+  // flashes white and stalls), and on WebView2 it only fills the webview
+  // anyway — the overlay behaves identically on both with no transition.
+  const [editorFullscreen, setEditorFullscreen] = useState(false);
+  useEffect(() => {
+    if (!editorFullscreen) return;
+    // Escape is consumed at capture so the same press does not also close an
+    // open dialog or cancel an inline edit; the page scroll stays locked
+    // while the overlay covers it (the fullscreen dialog's contract).
+    const exitOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      setEditorFullscreen(false);
+    };
+    window.addEventListener('keydown', exitOnEscape, true);
+    const previousBodyOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    // The conversation workspace renders this editor as a right-dock
+    // resource panel (#workspace-right, a z-10 stacking context with the
+    // center panel and separators as higher-stacking siblings); the global
+    // rule keyed on this attribute lifts the dock — and the fullscreen
+    // overlay inside it — above every shell sibling while fullscreen.
+    document.documentElement.setAttribute('data-workspace-editor-fullscreen', '');
+    return () => {
+      window.removeEventListener('keydown', exitOnEscape, true);
+      document.body.style.overflow = previousBodyOverflow;
+      document.documentElement.removeAttribute('data-workspace-editor-fullscreen');
+    };
+  }, [editorFullscreen]);
+  const toggleEditorFullscreen = useCallback(() => {
+    setEditorFullscreen((active) => !active);
+  }, []);
   const [terminalMenu, setTerminalMenu] = useState<TerminalMenu | null>(null);
   const [validationDialogOpen, setValidationDialogOpen] = useState(false);
   const [pendingValidation, setPendingValidation] = useState<WorkflowValidationResult | null>(null);
@@ -500,6 +560,25 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
   const historyRef = useRef<WorkflowEditorHistory>({ past: [], future: [] });
   const viewportRef = useRef<Viewport>(initialSessionDraft?.viewport ?? { x: 0, y: 0, zoom: 1 });
   const hasStableViewportRef = useRef(Boolean(initialSessionDraft?.viewport));
+  // Auto direction follows the canvas container aspect with hysteresis; a flip
+  // invalidates the stable viewport so the new arrangement is re-fitted.
+  useEffect(() => {
+    if (tab !== 'canvas') return undefined;
+    const canvas = canvasRef.current;
+    if (!canvas) return undefined;
+    const recompute = () => {
+      const next = resolveWorkflowLayoutDirection(directionPreference, canvas.clientWidth, canvas.clientHeight, layoutDirectionRef.current);
+      if (next !== layoutDirectionRef.current) {
+        layoutDirectionRef.current = next;
+        hasStableViewportRef.current = false;
+        setLayoutDirection(next);
+      }
+    };
+    recompute();
+    const observer = new ResizeObserver(() => recompute());
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, [directionPreference, tab]);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const canvasActionsRef = useRef<{
     quickAdd: (nodeId: string, outcome: EdgeOutcome) => void;
@@ -542,8 +621,8 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
     [agentIconKeys, nodeAgentSignature],
   );
   const authoringGraph = useMemo(
-    () => createAuthoringGraph(workflow, visibleTerminalIds, t),
-    [visibleTerminalSignature, workflowTopologySignature, t],
+    () => createAuthoringGraph(workflow, visibleTerminalIds, t, layoutDirection),
+    [visibleTerminalSignature, workflowTopologySignature, layoutDirection, t],
   );
   const layoutState = useWorkflowLayout(authoringGraph.spec);
   const graphLayout = layoutState.layout;
@@ -1034,20 +1113,37 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
     const canvas = canvasRef.current;
     const bounds = graphLayout?.bounds;
     if (!flowInstance || !canvas || !bounds || canvas.clientWidth === 0 || canvas.clientHeight === 0) return null;
-    const viewport = entryAnchoredViewport(bounds, { width: canvas.clientWidth, height: canvas.clientHeight }, { padding: WORKFLOW_EDITOR_FIT_PADDING, minZoom: WORKFLOW_EDITOR_MIN_ZOOM, maxZoom: WORKFLOW_EDITOR_FIT_MAX_ZOOM });
+    const viewport = entryAnchoredViewport(bounds, { width: canvas.clientWidth, height: canvas.clientHeight }, { padding: WORKFLOW_EDITOR_FIT_PADDING, minZoom: WORKFLOW_EDITOR_MIN_ZOOM, maxZoom: WORKFLOW_EDITOR_FIT_MAX_ZOOM, direction: layoutDirection });
     void flowInstance.setViewport(viewport);
     return viewport;
-  }, [flowInstance, graphLayout]);
+  }, [flowInstance, graphLayout, layoutDirection]);
+
+  // A fullscreen toggle resizes the canvas without changing the layout; the
+  // stable-viewport guard would otherwise carry the previous canvas's framing
+  // (a narrow-dock viewport parked in the corner of the fullscreen surface,
+  // and back on exit). Like a direction flip, the toggle is an explicit
+  // framing action: reset the guard and let the fit effect reframe the same
+  // layout for the resized canvas. Must run before the fit effect below.
+  const previousFullscreenRef = useRef(false);
+  useEffect(() => {
+    if (previousFullscreenRef.current === editorFullscreen) return;
+    previousFullscreenRef.current = editorFullscreen;
+    hasStableViewportRef.current = false;
+  }, [editorFullscreen]);
 
   // Only the first finished layout fits; later relayouts keep the user's viewport.
+  // A pending direction flip must not fit the stale pre-flip bounds: wait for a
+  // layout whose direction matches, otherwise the one-shot fit consumes the old
+  // arrangement and the new one is never framed.
   useEffect(() => {
     if (hasStableViewportRef.current) return;
+    if (graphLayout && graphLayout.direction !== layoutDirection) return;
     const viewport = fitLayoutViewport();
     if (!viewport) return;
     viewportRef.current = viewport;
     hasStableViewportRef.current = true;
     setViewportRevision((revision) => revision + 1);
-  }, [fitLayoutViewport]);
+  }, [editorFullscreen, fitLayoutViewport, graphLayout, layoutDirection]);
 
   const handleMoveEnd = useCallback((_: MouseEvent | TouchEvent | null, viewport: Viewport) => {
     viewportRef.current = viewport;
@@ -1088,26 +1184,28 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
 
   const canvasSurface = (
     <AppCard className="flex size-full min-h-0 flex-col gap-0 overflow-hidden border-0 bg-transparent py-0 shadow-none">
-      <CardHeader className="flex shrink-0 flex-col items-stretch justify-between gap-3 border-b px-4 py-3 @lg/workflow-editor:flex-row @lg/workflow-editor:items-center">
-        <div className="min-w-0">
-          <CardTitle>{t('workflowEditor.title')}</CardTitle>
-          <p className="mt-1 text-xs text-muted-foreground">{t('workflowEditor.subtitle')}</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Tabs value={tab} onValueChange={(value) => handleEditorTabChange(value as EditorTab)}>
-            <TabsList>
-              <TabsTrigger value="canvas">{t('workflowEditor.canvas')}</TabsTrigger>
-              <TabsTrigger value="json">JSON</TabsTrigger>
-            </TabsList>
-          </Tabs>
-          <div className="flex items-center rounded-lg border bg-background/70 p-0.5">
-            <Tooltip><TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-sm" className="size-7" disabled={!canUndo} onClick={undoWorkflow} aria-label={t('workflowEditor.undo')}><Undo2 className="size-3.5" /></Button></TooltipTrigger><TooltipContent>{t('workflowEditor.undo')} (Ctrl+Z)</TooltipContent></Tooltip>
-            <Tooltip><TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-sm" className="size-7" disabled={!canRedo} onClick={redoWorkflow} aria-label={t('workflowEditor.redo')}><Redo2 className="size-3.5" /></Button></TooltipTrigger><TooltipContent>{t('workflowEditor.redo')} (Ctrl+Y)</TooltipContent></Tooltip>
+      {editorFullscreen ? null : (
+        <CardHeader className="flex shrink-0 flex-col items-stretch justify-between gap-3 border-b px-4 py-3 @lg/workflow-editor:flex-row @lg/workflow-editor:items-center">
+          <div className="min-w-0">
+            <CardTitle>{t('workflowEditor.title')}</CardTitle>
+            <p className="mt-1 text-xs text-muted-foreground">{t('workflowEditor.subtitle')}</p>
           </div>
-          {defaultWorkflow ? <Button variant="outline" size="sm" onClick={applyDefaultTemplate}>{t('workflowEditor.defaultTemplate')}</Button> : null}
-          {showSaveAction ? <Button size="sm" disabled={!canSave || saving} onClick={() => void handleSave()}>{t('workflowEditor.saveWorkflow')}</Button> : null}
-        </div>
-      </CardHeader>
+          <div className="flex flex-wrap items-center gap-2">
+            <Tabs value={tab} onValueChange={(value) => handleEditorTabChange(value as EditorTab)}>
+              <TabsList>
+                <TabsTrigger value="canvas">{t('workflowEditor.canvas')}</TabsTrigger>
+                <TabsTrigger value="json">JSON</TabsTrigger>
+              </TabsList>
+            </Tabs>
+            <div className="flex items-center rounded-lg border bg-background/70 p-0.5">
+              <Tooltip><TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-sm" className="size-7" disabled={!canUndo} onClick={undoWorkflow} aria-label={t('workflowEditor.undo')}><Undo2 className="size-3.5" /></Button></TooltipTrigger><TooltipContent>{t('workflowEditor.undo')} (Ctrl+Z)</TooltipContent></Tooltip>
+              <Tooltip><TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-sm" className="size-7" disabled={!canRedo} onClick={redoWorkflow} aria-label={t('workflowEditor.redo')}><Redo2 className="size-3.5" /></Button></TooltipTrigger><TooltipContent>{t('workflowEditor.redo')} (Ctrl+Y)</TooltipContent></Tooltip>
+            </div>
+            {defaultWorkflow ? <Button variant="outline" size="sm" onClick={applyDefaultTemplate}>{t('workflowEditor.defaultTemplate')}</Button> : null}
+            {showSaveAction ? <Button size="sm" disabled={!canSave || saving} onClick={() => void handleSave()}>{t('workflowEditor.saveWorkflow')}</Button> : null}
+          </div>
+        </CardHeader>
+      )}
       <CardContent className="min-h-0 flex-1 p-0">
         {tab === 'canvas' ? (
           <div ref={canvasRef} className="relative size-full min-h-0">
@@ -1178,6 +1276,9 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
                 onZoomIn={() => { void flowInstance?.zoomIn(); }}
                 onZoomOut={() => { void flowInstance?.zoomOut(); }}
                 onFitView={() => { fitLayoutViewport(); }}
+                direction={{ preference: directionPreference, onChange: setDirectionPreference }}
+                onFullscreen={toggleEditorFullscreen}
+                fullscreenActive={editorFullscreen}
               />
             </ReactFlow>
             <WorkflowLayoutStatus state={layoutState} />
@@ -1284,7 +1385,37 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
           <DialogFooter><Button onClick={() => closeValidationDialog(false)}>{t('workflowEditor.validationDialogClose')}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
-      <div ref={setEditorContainerRef} className={cn('@container/workflow-editor h-[clamp(520px,calc(100dvh-11rem),760px)] min-h-0', className)} data-workflow-editor-layout={isCompact ? 'compact' : 'split'}>
+      <div
+        ref={setEditorContainerRef}
+        // Fullscreen yields to the navigation sidebar and the title bar:
+        // WebKitGTK clips a fixed element nested in the workspace panel tree
+        // to the group box (below the title bar) and paints/hit-tests its
+        // overlap with the sidebar differently from Chromium. Starting the
+        // surface at the shell's live published edges (sidebar right, group
+        // top) keeps it inside the clip box and free of sidebar overlap on
+        // every engine — the sidebar and title bar stay visible and
+        // clickable, and the canvas fit centers in the visible area.
+        // Elsewhere (workbench, sheets) the vars are unset → 0px.
+        style={editorFullscreen ? { left: 'var(--workspace-left-panel-width, 0px)', top: 'var(--workspace-top-offset, 0px)' } : undefined}
+        className={cn(
+          // The clamped height and the fullscreen overlay are mutually
+          // exclusive branches on purpose: two height utilities on one
+          // element resolve by stylesheet order (Tailwind v4 sorts the
+          // arbitrary clamp after h-auto), which left the fullscreen
+          // overlay sized as the clamped strip instead of the viewport.
+          // Fullscreen is a fixed viewport overlay — the same surface the
+          // runtime graphs' fullscreen dialog uses — and the insets alone
+          // size the box. No user-agent fullscreen canvas is involved, so
+          // none of the UA-canvas fixes (backdrop theming, 100% vs 100vh)
+          // apply.
+          '@container/workflow-editor min-h-0',
+          editorFullscreen
+            ? 'fixed inset-0 z-50 max-h-none bg-background text-foreground'
+            : 'h-[clamp(520px,calc(100dvh-11rem),760px)]',
+          className,
+        )}
+        data-workflow-editor-layout={isCompact ? 'compact' : 'split'}
+      >
         {isCompact ? (
           <div className="flex size-full min-h-0 flex-col gap-2">
             <Tabs value={compactPane} onValueChange={(value) => setCompactPane(value as 'canvas' | 'inspector')} className="shrink-0">
@@ -2963,7 +3094,7 @@ export type AuthoringGraph = {
   spec: WorkflowLayoutSpec;
 };
 
-export function createAuthoringGraph(workflow: WorkflowDsl, visibleTerminalIds: ReadonlySet<string> = new Set(), t: AuthoringTranslate = (key) => key): AuthoringGraph {
+export function createAuthoringGraph(workflow: WorkflowDsl, visibleTerminalIds: ReadonlySet<string> = new Set(), t: AuthoringTranslate = (key) => key, direction: WorkflowLayoutDirection = 'RIGHT'): AuthoringGraph {
   const collectedNodes = collectAuthoringNodes(workflow);
   const collectedIds = new Set(collectedNodes.map((node) => node.id));
   const nodeOrder = workflowSuccessTopologyOrder(workflow);
@@ -2996,6 +3127,7 @@ export function createAuthoringGraph(workflow: WorkflowDsl, visibleTerminalIds: 
     nodeLabels,
     edgeLabels,
     spec: {
+      direction,
       nodes: items.map((item) => ({
         id: item.id,
         width: item.terminal ? terminalNodeWidth(nodeLabels.get(item.id)!) : NODE_WIDTH,
@@ -3009,7 +3141,6 @@ export function createAuthoringGraph(workflow: WorkflowDsl, visibleTerminalIds: 
         from: edge.from,
         to: edge.to,
         outcome: edge.on === 'failure' ? 'failure' : 'success',
-        labelWidth: edgeLabelWidth(edgeLabels.get(edgeId(edge, index))!),
       })),
       groups: [],
     },
@@ -3039,6 +3170,7 @@ export function createAuthoringFlowProjection(
 ): { nodes: Node<EditorNodeData>[]; edges: Edge[] } {
   const nodeById = new Map(workflow.nodes.map((node) => [node.id, node]));
   const specById = new Map(graph.spec.nodes.map((node) => [node.id, node]));
+  const handlePositions = workflowHandlePositions(layout?.direction ?? 'RIGHT');
   const nodes: Node<EditorNodeData>[] = graph.items.map((item) => {
     const rect = layout?.nodes.get(item.id);
     const spec = specById.get(item.id)!;
@@ -3049,20 +3181,21 @@ export function createAuthoringFlowProjection(
     const iconKey = node ? nodeIconKeys.get(node.id) : undefined;
     const supportsFailureOutcome = nodeSupportsFailureOutcome(node);
     const selected = item.terminal ? item.id === selectedTerminalId : item.id === selectedNodeId;
-    const targetPosition = spec.pinBelow ? SOURCE_POS : TARGET_POS;
+    const targetPosition = spec.pinBelow ? handlePositions.source : handlePositions.target;
     return {
       id: item.id,
       type: 'editorCanvas',
       position: rect ? { x: rect.x, y: rect.y } : { x: 0, y: 0 },
       // A node added after the last finished layout appears once its position is known.
       hidden: !rect,
-      sourcePosition: SOURCE_POS,
+      sourcePosition: handlePositions.source,
       targetPosition,
       data: {
         label: graph.nodeLabels.get(item.id) ?? item.id,
         kind: item.terminal ? 'terminal' : node?.type ?? 'node',
         terminal: item.terminal,
         targetPosition,
+        sourcePosition: handlePositions.source,
         iconKey,
         entryCandidate: !item.terminal && graph.entryCandidateIds.has(item.id),
         entryLabel: t('workflowEditor.entryBadge'),

@@ -1,0 +1,42 @@
+{
+  "light": {
+    "conversation": {
+      "assetId": "vista-inkwash-light",
+      "fit": "cover",
+      "position": "center",
+      "repeat": "no-repeat",
+      "opacity": 0.9,
+      "overlayColor": "background",
+      "overlayOpacity": 0.1
+    },
+    "settings": {
+      "assetId": "vista-inkwash-light",
+      "fit": "cover",
+      "position": "center",
+      "repeat": "no-repeat",
+      "opacity": 0.9,
+      "overlayColor": "background",
+      "overlayOpacity": 0.1
+    }
+  },
+  "dark": {
+    "conversation": {
+      "assetId": "vista-summit-dark",
+      "fit": "cover",
+      "position": "center",
+      "repeat": "no-repeat",
+      "opacity": 0.9,
+      "overlayColor": "background",
+      "overlayOpacity": 0.08
+    },
+    "settings": {
+      "assetId": "vista-summit-dark",
+      "fit": "cover",
+      "position": "center",
+      "repeat": "no-repeat",
+      "opacity": 0.9,
+      "overlayColor": "background",
+      "overlayOpacity": 0.08
+    }
+  }
+}

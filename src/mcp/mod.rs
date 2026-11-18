@@ -25,6 +25,7 @@ use crate::config::{
     McpServerConfig, McpServerHealthResult, McpTransportConfig, OAuthClientConfig, SettingsConfig,
 };
 use crate::process::{ManagedProcessGroup, PROCESS_GROUP_TERMINATION_GRACE, background_command};
+#[cfg(test)]
 use crate::storage::write_json;
 
 /// MCP 协议版本（现代规范统一用日期字符串；stdio / http / sse 三传输共用，
@@ -305,7 +306,7 @@ impl McpManager {
     }
 
     fn save_settings(&self, settings: &SettingsConfig) -> Result<()> {
-        write_json(&self.settings_path, settings)
+        crate::storage::save_settings_file(&self.settings_path, settings).map(|_| ())
     }
 }
 

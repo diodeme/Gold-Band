@@ -633,6 +633,9 @@
       "switchToTreeView": "切換為樹狀目錄",
       "copyAbsolutePath": "複製絕對路徑",
       "copyRelativePath": "複製相對路徑",
+      "relativeToRunDirectory": "相對於執行目錄",
+      "relativeToAttachmentDirectory": "相對於附件目錄",
+      "relativeToSourceWorkspace": "相對於來源工作目錄",
       "openWorkspaceFile": "開啟工作區檔案",
       "referenceToConversation": "引用到對話",
       "removeWorkspaceReference": "移除檔案引用",
@@ -773,6 +776,12 @@
     }
   },
   "errors": {
+    "agent.launch-command-missing": "此 Agent 缺少啟動命令，請在 Agent 管理中補充命令後重新診斷。",
+    "provider": {
+      "auth-required": "此 Agent 需要完成驗證後才能繼續。",
+      "auth-required-missing-env": "此 Agent 需要驗證。請先設定環境變數：{{env}}。",
+      "auth-required-login": "此 Agent 需要驗證。請完成供應商驗證後重新檢查。"
+    },
     "npx-cache.busy": "已有快取修復正在進行，請稍後重試。",
     "npx-cache.unavailable": "無法確認可修復的 npx 快取目錄，請重新執行環境診斷。",
     "npx-cache.changed": "診斷、設定或快取已變更，請關閉對話方塊後重試。",
@@ -923,6 +932,7 @@
     },
     "agent": {
       "already-exists": "Agent {{agentType}} 已存在。",
+      "unsupported-platform": "Agent {{agentType}} 不支援目前平台（{{os}}/{{arch}}）。",
       "not-configured": "Agent {{agentType}} 尚未設定。",
       "display-name-required": "請填寫 Agent 名稱。",
       "command-required": "請填寫 Agent 啟動命令。"
@@ -946,7 +956,7 @@
       "compaction-summary-query-failed": "無法載入壓縮摘要，請重試。",
       "adapter-exited": "Agent 程式在 {{method}} 階段退出。請檢查命令、參數、環境變數、網路和認證狀態。",
       "adapter-exited-with-code": "Agent 程式在 {{method}} 階段退出（退出碼 {{exitCode}}）。請檢查命令、參數、環境變數、網路和認證狀態。",
-      "adapter-start-failed": "無法啟動 Agent：{{osError}}",
+      "adapter-start-failed": "無法啟動 {{command}}：{{osError}}",
       "doctor-timeout": "Agent 環境診斷在 {{method}} 階段逾時。"
     },
     "app": {
@@ -998,7 +1008,10 @@
         "folder-not-found": "找不到所選資料夾",
         "folder-not-directory": "所選路徑不是資料夾",
         "folder-read-failed": "無法完整讀取所選資料夾",
-        "no-markdown-files": "所選資料夾中沒有 Markdown 檔案"
+        "no-markdown-files": "所選資料夾中沒有 Markdown 檔案",
+        "file-not-found": "找不到所選檔案",
+        "file-not-markdown": "所選檔案不是 Markdown 檔案",
+        "no-files": "未選擇任何檔案"
       }
     },
     "manual-check": {
@@ -1017,7 +1030,8 @@
       "continue-launch-channel-closed": "工作流還原未能啟動，請重試。"
     },
     "composer": {
-      "context-limit-exceeded": "上下文最多可包含 {{max}} 個引用和附件。"
+      "context-limit-exceeded": "上下文最多可包含 {{max}} 個引用和附件。",
+      "referenceUnavailable": "引用已失效"
     },
     "conversation": {
       "task-not-found": "找不到該工作階段。",
@@ -1037,6 +1051,7 @@
       "session-restore-unsupported": "目前 Agent 不支援還原已有工作階段。",
       "history-sync-unsupported": "目前 Agent 不支援同步已有工作階段的完整歷史。",
       "prompt-empty": "請輸入要傳送的內容。",
+      "prompt-too-long": "訊息內容不能超過 {{maxChars}} 個字元。",
       "prompt-quote-invalid": "引用資料無效，請刪除後重新引用。",
       "prompt-quote-limit-exceeded": "引用內容總長度不能超過 {{maxChars}} 個字元。",
       "prompt-quote-diff-limit-exceeded": "完整 diff 引用總大小不能超過 {{maxBytes}} 位元組。",
@@ -1049,6 +1064,7 @@
       "prompt-queue-full": "待傳送佇列已滿，最多可保留 10 條。",
       "prompt-queue-item-not-found": "這條待傳送內容已不存在。",
       "prompt-queue-item-dispatching": "這條內容正在傳送，暫時無法操作。",
+      "prompt-queue-item-editing": "這條內容正在取回編輯，暫時無法操作。",
       "prompt-queue-empty": "待傳送佇列為空。",
       "prompt-queue-revision-conflict": "待傳送順序已發生變化，請在清單更新後重試。",
       "prompt-queue-invalid-order": "待傳送順序無效，請重試。",
@@ -1063,7 +1079,8 @@
       "composer-draft-empty": "沒有可儲存的內容。",
       "composer-draft-full": "草稿箱已滿，最多可保留 {{max}} 則。",
       "composer-draft-not-found": "這則草稿已不存在。",
-      "composer-draft-storage-failed": "草稿箱儲存失敗，請重試。",
+      "composer-draft-invalid": "草稿箱資料無效，請檢查本地資料後重試。",
+      "composer-draft-storage-failed": "無法存取草稿箱，請重試。",
       "execution-plan": {
         "not-found": "這次 Run 還沒有執行計畫。",
         "revision-conflict": "執行計畫已變化。請重新載入後再試。",
@@ -1082,6 +1099,24 @@
       }
     },
     "workflow": {
+      "retry": {
+        "run-active": "工作流正在執行，無法重試目前節點。",
+        "run-terminal": "工作流已結束，無法重試目前節點。",
+        "node-not-retryable": "目前節點在目前狀態下無法重試。",
+        "error-blocked": "工作流已被錯誤阻擋，無法重試目前節點。",
+        "manual-check-pending": "目前節點正在等待人工確認，無法重試。",
+        "unsupported-node": "目前節點類型不支援重試。",
+        "stale-locator": "目前節點已變更，請依最新狀態操作。",
+        "workflow-invalid": "工作流設定或執行環境無效，無法重試目前節點。",
+        "invalid-locator": "節點位置無效，請重新整理後重試。",
+        "source-sealed": "此執行已封存，無法繼續執行或傳送訊息。",
+        "inherited-attempt": "這是繼承的歷史節點，請在來源執行中查看會話。",
+        "source-busy": "來源會話仍在停止中，請稍後重試。",
+        "prefix-too-large": "重跑所需的歷史資料過大，請從任務起點重新執行。",
+        "target-missing": "最新工作流中已沒有此節點。",
+        "workspace-unavailable": "來源工作區已無法使用，請先恢復工作區。",
+        "plan-changed": "工作流設定已變更，請重新整理後重試。"
+      },
       "agent-doctor-failed": "Agent {{agentType}} 未通過 doctor。",
       "agent-doctor-required": "Agent {{agentType}} 需要先通過 doctor。",
       "permission-mode-unsupported": "Agent {{agentType}} 不支援權限模式 {{permissionMode}}。",
@@ -1235,6 +1270,9 @@
     "customAgentIdPlaceholder": "例如 my-agent",
     "pending": "待支援",
     "configured": "已新增",
+    "integrationOrigin": {
+      "communityAdapter": "社群橋接"
+    },
     "empty": "目前還沒有已設定的 agent",
     "createTitle": "新增 Agent",
     "createDescription": "建立一個可用於節點執行的 agent 設定。",
@@ -1286,6 +1324,22 @@
     "diagnosing": "診斷中",
     "savedAndDiagnosing": "設定已儲存，正在背景診斷。",
     "diagnosticComplete": "環境診斷完成，診斷程式已退出。",
+    "connectionGuide": {
+      "title": "接入條件",
+      "command": "啟動命令",
+      "path": "PATH",
+      "pathRequirement": "{{command}} 需要能被 Gold Band 的有效 PATH 解析，或在下方填寫明確的可執行檔路徑。",
+      "fallback": "相容方式",
+      "installedCli": "本機 {{command}} CLI 可觸發 ACP adapter 的受控準備。",
+      "preparedFallback": "僅使用已準備的 npx 快取；npx 可用本身不代表 Agent 已安裝。",
+      "auth": "認證",
+      "authRequirement": "需完成供應商登入或設定其支援的憑據；環境變數會儲存到本機 Agent 設定。",
+      "steps": "檢查步驟：解析啟動命令 → 啟動 ACP adapter → initialize → session/new → 讀取能力 → 清理診斷程序。",
+      "result": "最近結果",
+      "checkNow": "立即檢查",
+      "saveToCheck": "儲存後會自動執行接入檢查，結果也會顯示在 Agent 卡片。",
+      "formChanged": "目前表單已修改，儲存後將依新設定重新檢查。"
+    },
     "diagnosticFailed": "環境診斷未通過：{{reason}}",
     "diagnosticFailedNoReason": "環境診斷未通過。",
     "diagnosticFailedFallback": "請檢查 agent 命令、網路和認證狀態。",
@@ -1302,7 +1356,8 @@
     "status": {
       "unknown": "未檢測",
       "healthy": "正常",
-      "unhealthy": "異常"
+      "unhealthy": "異常",
+      "stale": "需重新診斷"
     }
   },
   "contextManagement": {
@@ -1333,7 +1388,6 @@
     "builtInSectionDescription": "固定角色，支援開啟草稿並另存成新的自訂角色。",
     "customSectionTitle": "自訂角色",
     "customSectionDescription": "你建立的使用者級自訂角色會在這裡分頁展示。",
-    "customProfilesPageRange": "自訂角色 {{start}}-{{end}} / {{total}}",
     "builtInReadonlyHint": "內建角色不可直接儲存，請另存成新角色。",
     "emptyContent": "沒有正文內容",
     "profileRequired": "名稱和摘要不能為空。",
@@ -1438,10 +1492,12 @@
       "storageProject": "專案級。儲存到 {{path}}"
     },
     "importProfile": "匯入角色",
-    "importSettingsDescription": "選擇資料夾批次匯入角色 Markdown 檔案，缺少的名稱和摘要會自動補上。",
+    "importSettingsDescription": "從資料夾批次匯入，或直接選擇角色 Markdown 檔案匯入，缺少的名稱和摘要會自動補上。",
     "importDynamicTemplateDescription": "開啟後本次匯入的所有角色按動態範本處理；正文不合法的會自動降級為靜態。",
     "importPickFolder": "選擇資料夾並匯入",
     "importPickFolderTitle": "選擇包含角色 Markdown 檔案的資料夾",
+    "importPickFiles": "選擇檔案並匯入",
+    "importPickFilesTitle": "選擇角色 Markdown 檔案",
     "importResultTitle": "匯入結果",
     "importResultSummary": "共掃描 {{total}} 個檔案，成功 {{success}} 個，失敗 {{failed}} 個。",
     "importResultImported": "已匯入",
@@ -1896,7 +1952,6 @@
     "loadFailed": "無法載入本輪檔案變化",
     "partial": "部分檔案變化無法完整捕獲",
     "showMore": "再顯示 {{count}} 個檔案",
-    "collapse": "收起檔案清單",
     "openDiff": "查看 {{path}} 的差異",
     "openVersion": "查看 {{path}} 的本輪版本",
     "deletedFile": "已刪除 {{path}}",
@@ -2230,6 +2285,18 @@
     "scrollForHistory": "— 上滑查看歷史資訊 —",
     "returnToLatest": "回到最新",
     "rawSearchPlaceholder": "搜尋原始幀內容…",
+    "turnRail": {
+      "older": "更早的輪次",
+      "newer": "更新的輪次",
+      "label": "會話導航",
+      "jump": "跳轉到：{{preview}}",
+      "kind": {
+        "prompt": "使用者提問",
+        "tool": "工具呼叫",
+        "compaction": "上下文壓縮",
+        "permission": "權限請求"
+      }
+    },
     "rawKindPlaceholder": "事件類型",
     "rawKindAll": "全部事件",
     "rawDirectionAll": "全部方向",
@@ -2341,7 +2408,10 @@
       "interruptConfirmTitle": "要立即傳送這則內容嗎？",
       "interruptConfirmDescription": "目前的回覆會先停止，接著傳送這則內容。",
       "interruptConfirmSkip": "之後不再提示",
-      "interruptConfirmAction": "停止並傳送"
+      "interruptConfirmAction": "停止並傳送",
+      "itemStateEditing": "取回編輯中",
+      "itemStateSending": "傳送中",
+      "storageError": "待傳送佇列讀取失敗"
     },
     "composerDrafts": {
       "title": "草稿箱",
@@ -2352,7 +2422,11 @@
       "take": "取出到輸入框",
       "takeOccupied": "請先處理輸入框中的目前內容",
       "delete": "刪除草稿",
-      "takeConflict": "輸入框已有內容，草稿已放回草稿箱。"
+      "deleteConfirmTitle": "刪除這條草稿？",
+      "deleteConfirmDescription": "草稿的正文、引用、角色和附件引用會一起刪除，此操作無法復原。",
+      "takeConflict": "輸入框已有內容，草稿仍保留在草稿箱。",
+      "takeDeleteKept": "內容已取回輸入框，原草稿仍保留在草稿箱。",
+      "saveFull": "草稿箱已滿，刪除舊草稿後可繼續保存"
     },
     "sending": "傳送中",
     "sendFailed": "傳送失敗",
@@ -2482,13 +2556,21 @@
     "zoomIn": "放大",
     "zoomOut": "縮小",
     "fitView": "適應檢視",
+    "direction": "版面方向",
+    "directionAuto": "自動",
+    "directionHorizontal": "橫向",
+    "directionVertical": "縱向",
+    "fullscreen": "全螢幕檢視",
+    "exitFullscreen": "結束全螢幕",
     "viewNodeDetail": "查看節點詳情",
     "viewSession": "查看工作階段",
     "viewLog": "查看記錄檔",
     "copyNodeId": "複製 node id",
-    "retryFromNode": "從該節點重試",
+    "retryCurrentNode": "重試目前節點",
     "layoutPending": "正在排列工作流圖",
-    "layoutFailed": "工作流圖排列失敗"
+    "layoutFailed": "工作流圖排列失敗",
+    "rerunFailedNode": "從此節點重跑",
+    "rerunFailedAttempt": "從 {{attempt}} 重跑"
   },
   "settings": {
     "title": "設定",
@@ -2539,6 +2621,10 @@
     "editorFontSize": "編輯器字型大小",
     "editorFontSizeDescription": "調整 CodeMirror 檔案與差異檢視中的字型大小。",
     "resetFontSize": "還原預設字型大小",
+    "interfaceZoom": "介面縮放",
+    "interfaceZoomDescription": "等比縮放整個用戶端介面；也可用 Ctrl+滾輪或 Ctrl+加號/減號調整。",
+    "interfaceZoomInvalid": "請輸入 50–250 之間的數字",
+    "resetZoom": "還原預設縮放",
     "localFonts": "自訂字型堆疊",
     "chooseLocalFont": "新增或移除字型",
     "localFontsDescription": "已載入 {{count}} 個本機字型；越靠前優先順序越高。",
@@ -2771,13 +2857,23 @@
       "title": "桌布",
       "chooseTitle": "桌布",
       "description": "自訂桌布會覆蓋主題套件的桌布，並隨用戶端尺寸自適應。",
-      "choose": "選擇桌布",
       "recent": "最近使用",
       "useRecent": "使用此最近桌布",
+      "deleteRecent": "刪除此桌布",
       "noRecent": "沒有最近桌布",
       "import": "匯入新桌布",
-      "restoreTheme": "還原主題桌布",
+      "sourceTheme": "主題桌布",
+      "sourceCustom": "自訂",
+      "sourceDisable": "停用",
+      "themeUnavailable": "目前主題未提供桌布",
+      "none": "停用主題桌布",
+      "noneActive": "已停用",
+      "themeGallery": "主題桌布",
+      "useThemeWallpaper": "使用此主題桌布",
       "visibility": "桌布可見度",
+      "fitLabel": "顯示方式",
+      "fitCover": "填滿",
+      "fitContain": "符合",
       "previewTitle": "桌布預覽",
       "expandPreview": "放大桌布預覽",
       "collapsePreview": "縮小桌布預覽",
@@ -2883,43 +2979,6 @@
       "confirmInterrupt": "立即傳送前確認中斷目前回覆"
     }
   },
-  "multica": {
-    "taskManagement": {
-      "title": "需求管理",
-      "source": {
-        "label": "任務來源",
-        "multica": "Multica"
-      },
-      "workspace": {
-        "label": "工作區",
-        "remove": "移除工作區",
-        "removeConfirm": "確定移除該工作區？該空間的需求將不再展示。"
-      },
-      "column": {
-        "empty": "沒有任務"
-      },
-      "account": {
-        "connected": "已連線",
-        "switchAccount": "切換帳號",
-        "disconnect": "中斷連線"
-      }
-    },
-    "connection": {
-      "title": "連線網址設定",
-      "addressLabel": "連線網址",
-      "save": "儲存",
-      "invalidUrl": "請輸入合法的 http(s) 網址。",
-      "restoreDefault": "還原預設網址",
-      "restoring": "還原中…"
-    },
-    "connect": {
-      "title": "連線 Multica",
-      "body": "即將連線到以下網址：",
-      "confirm": "連線",
-      "connecting": "連線中…",
-      "cancelConnect": "取消連線"
-    }
-  },
   "conversation": {
     "title": "工作階段",
     "newConversation": "新工作階段",
@@ -2988,6 +3047,13 @@
       "loadingPinned": "正在載入置頂工作階段…",
       "retryPinned": "置頂工作階段載入失敗，點選重試",
       "loadMorePinned": "載入更多置頂工作階段",
+      "recent": "近期會話",
+      "loadingRecent": "正在載入近期會話",
+      "retryRecent": "重試近期會話",
+      "noRecent": "暫無近期會話",
+      "loadMoreRecent": "顯示更多近期會話",
+      "allRecentShown": "已顯示全部近期會話",
+      "allConversationsShown": "已顯示全部會話",
       "loadingRuns": "正在載入執行歷史…",
       "retryRuns": "執行歷史載入失敗，點選重試",
       "loadMoreRuns": "載入更多執行記錄",
@@ -3033,7 +3099,8 @@
     "composer": {
       "multicaNeedLocalWorkspace": "請先新增本機工作區，再執行需求",
       "multicaBindingTag": "Multica · {{title}}",
-      "removeMulticaBinding": "解除任務綁定"
+      "removeMulticaBinding": "解除任務綁定",
+      "resizeHandle": "拖動調整輸入框高度"
     },
     "branchPicker": {
       "label": "分支",
@@ -3136,7 +3203,12 @@
       "worktree": "工作樹",
       "composerRuntimeControlledPlaceholder": "目前工作階段由 runtime 執行中，暫不可輸入",
       "composerStoppingPlaceholder": "正在停止目前工作階段…",
-      "composerStoppedPlaceholder": "目前工作階段已停止，你可以輸入任何內容繼續執行"
+      "composerStoppedPlaceholder": "目前工作階段已停止，你可以輸入任何內容繼續執行",
+      "nodeRerunConfirmTitle": "從 {{node}} / {{attempt}} 重跑？",
+      "nodeRerunConfirmDescription": "將停止來源執行，使用最新工作流建立新的 Run，並從此節點重新執行後續節點。現有工作區變更和外部操作不會撤銷。",
+      "sourceSealed": "來源執行已封存，仍可查看歷史。",
+      "rerunHistoryHint": "舊會話保留在來源執行中。",
+      "viewRerunSource": "查看來源執行"
     },
     "gitRequirement": {
       "versionUnsupportedTitle": "Git 版本過低",
@@ -3215,5 +3287,171 @@
     "validationPositiveNumber": "{{field}} 必須大於 0",
     "validationTemplateNameRequired": "範本名稱不能為空",
     "validationTemplateNameDuplicated": "範本名稱 {{name}} 已存在"
+  },
+  "onboarding": {
+    "loading": "正在載入",
+    "loadFailed": "無法讀取啟動設定，請重試。",
+    "retry": "重試",
+    "language": "語言",
+    "theme": "切換主題",
+    "exit": "退出引導",
+    "progress": "設定進度",
+    "checking": "正在檢查環境…",
+    "runtimeVersion": "建議 Node.js {{version}}；已驗證範圍 {{ranges}}",
+    "recheck": "重新偵測",
+    "installGuide": "官方安裝指引",
+    "discovering": "正在偵測本機 Agent…",
+    "discovered": "偵測到 {{count}} 個可用 Agent",
+    "noAgents": "尚未偵測到已安裝的 Agent。安裝任一 Agent 後重新偵測。",
+    "deferHint": "你可以先進入應用程式，稍後在設定中完成 Agent 設定。",
+    "defaultAgent": "預設 Agent",
+    "chooseAgent": "選擇可用 Agent",
+    "defaultModel": "預設模型",
+    "chooseModel": "選擇模型",
+    "providerDefault": "此 Agent 使用供應商預設模型。",
+    "checkingModel": "正在讀取模型設定…",
+    "permission": "權限模式",
+    "choosePermission": "選擇權限模式",
+    "preview": "套用預覽",
+    "previewSummary": "將更新 {{count}} 個內建工作流程的 {{slots}} 個執行設定。",
+    "slots": "{{count}} 個執行設定",
+    "loadMore": "載入更多",
+    "back": "上一步",
+    "help": "說明",
+    "skipGit": "暫時略過 Git",
+    "setUpLater": "稍後設定",
+    "next": "下一步",
+    "apply": "套用並完成",
+    "review": "預覽變更",
+    "repairHint": "請依供應商指引完成安裝或登入，再重新偵測。",
+    "settingsTitle": "引導與工作流程",
+    "rerunTitle": "首次啟動引導",
+    "rerunDescription": "重新檢查 Git、執行環境和本機 Agent。",
+    "defaultsTitle": "預設工作流程",
+    "defaultsDescription": "統一設定內建工作流程的 Agent、模型和權限，不影響自訂工作流程。",
+    "configureDefaults": "設定預設值",
+    "rerun": "重新執行引導",
+    "npxUnavailable": "透過 npx 啟動的 Agent 暫時無法使用，其他 Agent 仍可繼續偵測。",
+    "allUnavailable": "偵測到的 Agent 暫時無法使用，請查看下方原因。",
+    "actualNode": "實際使用的 Node.js {{version}}：{{path}}",
+    "unavailable": {
+      "title": "{{count}} 個 Agent 暫時無法使用",
+      "runtimeRequired": "需要 npm/npx",
+      "doctorFailed": "診斷未通過：{{reason}}",
+      "nodeVersionHint": "目前的 Node.js {{version}} 不在已驗證範圍內，建議安裝 {{recommended}}。",
+      "runtimeHint": "執行環境有異常，可能導致此 Agent 無法啟動。"
+    },
+    "steps": {
+      "git": "Git",
+      "runtime": "執行環境",
+      "agent": "Agent"
+    },
+    "titles": {
+      "git": "準備 Git",
+      "runtime": "檢查執行環境",
+      "agent": "連接 Agent，設定預設模型"
+    },
+    "descriptions": {
+      "git": "Git 用於版本管理，也可以稍後安裝。",
+      "runtime": "部分 Agent 透過 npx 啟動，需要 Node.js、npm 與 npx。其他 Agent 不受影響。",
+      "agent": "可用 Agent 會自動儲存。選擇預設模型後，預覽並套用至所有內建工作流程。"
+    },
+    "status": {
+      "ready": "已就緒",
+      "missing": "未安裝",
+      "unsupported": "版本不支援",
+      "unverified": "未驗證版本",
+      "incompatible": "環境不一致",
+      "failed": "檢查失敗",
+      "timeout": "檢查逾時",
+      "cancelled": "已取消",
+      "skipped": "已略過",
+      "pending": "尚未檢測",
+      "checking": "檢測中",
+      "warning": "警告"
+    },
+    "errors": {
+      "setup": {
+        "agent-preparation-required": "請依供應商指引完成安裝或登入，再重新偵測。",
+        "probe-failed": "檢測失敗，請重新檢測。",
+        "probe-cancelled": "檢測已取消，請重新檢測以繼續。",
+        "environment-check-required": "請先完成執行環境檢測。",
+        "configuration-conflict": "設定已在其他位置變更，請重新檢測 Agent 並預覽最新修改。",
+        "preview-stale": "所選模型或內建工作流程已變更，請重新預覽。",
+        "agent-unavailable": "此 Agent 已無法使用，請重新檢測或選擇其他 Agent。",
+        "model-config-invalid": "模型選項已失效，請重新選擇模型。",
+        "model-selection-required": "請先選擇模型。",
+        "permission-selection-required": "請先選擇權限模式。",
+        "git-decision-required": "請安裝支援的 Git 版本，或明確選擇略過 Git。",
+        "recovery-required": "上次儲存無法復原，請恢復設定目錄的存取權限後重新啟動。",
+        "executable-path-invalid": "請選擇現有可執行程式的完整路徑。",
+        "commit-failed": "無法儲存，請檢查目錄權限與磁碟空間後重試。",
+        "operation-id-invalid": "儲存請求無效，請重新預覽。",
+        "templates-initialization-required": "內建工作流程尚未初始化，請重新檢測 Agent。"
+      }
+    },
+    "gitVersion": "需要 Git {{version}} 或更新版本。",
+    "previousBindings": "即將取代的目前設定",
+    "previousBinding": "{{slot}}：{{agent}} / {{model}}",
+    "defaultModelLabel": "供應商預設模型",
+    "runtimeBlocked": "執行環境檢測未通過",
+    "detectionFailed": "Agent 檢測失敗，請重試。",
+    "recheckRuntime": "重新檢測執行環境",
+    "viewRuntime": "檢視執行環境",
+    "environmentHelp": {
+      "missing": "找不到此工具。請依官方指引安裝後重新檢測。",
+      "unsupported": "請依官方指引安裝支援的版本後重新檢測。",
+      "unverified": "此穩定版本不在目前已驗證範圍內，但偵測到的工具鏈相容，可以繼續。建議優先使用已驗證的 LTS 版本。",
+      "incompatible": "偵測到的執行環境組合不相容，請檢查安裝位置後重新檢測。",
+      "failed": "無法完成檢測。請檢查程式路徑、存取權限及安裝狀態後重試。",
+      "timeout": "檢測逾時，請重新檢測；若持續逾時，請確認此工具能否正常啟動。",
+      "cancelled": "檢測已取消，請重新檢測。"
+    },
+    "environmentReasons": {
+      "probe-unavailable": "無法確認實際使用的執行環境，請檢查安裝狀態後重新檢測。",
+      "node-mismatch": "使用了不同的 Node.js。預期：{{expectedNodePath}}；實際：{{actualNodePath}}。",
+      "node-version-mismatch": "Node.js 版本不一致。預期：{{expectedVersion}}；實際：{{actualVersion}}。",
+      "npm-metadata-missing": "無法確認 npm 的安裝資訊，請修復 Node.js/npm 安裝後重新檢測。",
+      "npm-engines-incompatible": "此 npm 不支援目前的 Node.js，要求：{{nodeRange}}。",
+      "npm-version-mismatch": "npm 版本資訊不一致。輸出：{{expectedVersion}}；套件：{{actualVersion}}。",
+      "npm-package-mismatch": "npm 與 npx 來自不同安裝。npm：{{expectedNpmRoot}}；目前工具：{{actualNpmRoot}}。"
+    }
+  },
+  "multica": {
+    "taskManagement": {
+      "title": "需求管理",
+      "source": {
+        "label": "任務來源",
+        "multica": "Multica"
+      },
+      "workspace": {
+        "label": "工作區",
+        "remove": "移除工作區",
+        "removeConfirm": "確定移除該工作區？該空間的需求將不再展示。"
+      },
+      "column": {
+        "empty": "沒有任務"
+      },
+      "account": {
+        "connected": "已連線",
+        "switchAccount": "切換帳號",
+        "disconnect": "中斷連線"
+      }
+    },
+    "connection": {
+      "title": "連線網址設定",
+      "addressLabel": "連線網址",
+      "save": "儲存",
+      "invalidUrl": "請輸入合法的 http(s) 網址。",
+      "restoreDefault": "還原預設網址",
+      "restoring": "還原中…"
+    },
+    "connect": {
+      "title": "連線 Multica",
+      "body": "即將連線到以下網址：",
+      "confirm": "連線",
+      "connecting": "連線中…",
+      "cancelConnect": "取消連線"
+    }
   }
 }

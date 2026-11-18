@@ -34,6 +34,8 @@ describe('ConversationSidebar Direct terminal result dot', () => {
       pinRefs: [],
       pinnedTasks: [],
       pinnedTaskPage: { status: 'ready', nextCursor: null },
+      recentTasks: [],
+      recentTaskPage: { status: 'not-loaded', nextCursor: null },
       tasksByWorkspace: {
         'project-001': [{
           projectId: 'project-001',
@@ -56,6 +58,7 @@ describe('ConversationSidebar Direct terminal result dot', () => {
         }],
       },
       workspaceTaskPages: { 'project-001': { status: 'ready', nextCursor: null } },
+      preferences: { 'workspaces.collapsed': false },
     };
     const container = document.createElement('div');
     document.body.append(container);
@@ -78,6 +81,7 @@ describe('ConversationSidebar Direct terminal result dot', () => {
             onRetryBootstrap={() => {}}
             onRequestWorkspaceTasks={() => {}}
             onRequestPinnedTasks={() => {}}
+            onRequestRecentTasks={() => {}}
             onRequestTaskRuns={() => {}}
           />,
         );

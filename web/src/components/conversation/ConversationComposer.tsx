@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { displayAppError } from '@/i18n';
 import { Send, Paperclip, Workflow, Route, Bot, Folders, Plus, ChevronDown, Settings2, AlarmClock, X, Laptop, GitFork, Check, Loader2, Globe } from 'lucide-react';
+import { useComposerResize } from '@/hooks/use-composer-resize';
+import { ComposerResizeHandle } from '@/components/conversation/ComposerResizeHandle';
 import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationDirectConfigVm, ConversationRunModeVm, ConversationWorkLocation, ConversationWorkspaceVm, ProfileVm, WorkflowRepairTarget, WorkflowTemplateStore } from '../../types';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -805,6 +807,11 @@ export function ConversationComposer({
   const multicaChipActive = Boolean(multicaBinding) && !committedSlashCommand;
   const committedInputLayout = useLeadingAdornmentTextIndent(Boolean(committedSlashCommand) || multicaChipActive);
 
+  const inputScrollRef = useRef<HTMLDivElement | null>(null);
+  const resize = useComposerResize({
+    getBaseHeight: () => inputScrollRef.current?.getBoundingClientRect().height ?? 0,
+  });
+
   useEffect(() => {
     const fallbackAgent = runMode.directConfig?.agentType
       || agents[0]?.agentType
@@ -943,10 +950,7 @@ export function ConversationComposer({
         ? branchSelection.branch
         : undefined,
       ...(role ? { role } : {}),
-      workspaceFiles: workspaceFiles.map(({ projectId: refProjectId, relativePath }) => ({
-        projectId: refProjectId,
-        relativePath,
-      })),
+      workspaceFiles: workspaceFiles.map(({ source }) => source),
       quotes,
     };
     setSubmittingAttachments(true);
@@ -1023,10 +1027,7 @@ export function ConversationComposer({
       }) : undefined,
       autoConfig: isAuto ? normalizeConversationAutoConfigForSubmit(autoConfigWithSession()) : undefined,
       ...(role ? { role } : {}),
-      workspaceFiles: workspaceFiles.map(({ projectId: refProjectId, relativePath }) => ({
-        projectId: refProjectId,
-        relativePath,
-      })),
+      workspaceFiles: workspaceFiles.map(({ source }) => source),
       quotes,
     };
   };
@@ -1140,14 +1141,16 @@ export function ConversationComposer({
           <PromptInput
           value={visibleContent}
           onValueChange={(value) => setContent(`${committedSlashCommand?.prefix ?? ''}${value}`)}
-          maxHeight={CONVERSATION_HOME_COMPOSER_LAYOUT.textareaMaxHeightPx}
+          maxHeight={Number.POSITIVE_INFINITY}
           onSubmit={() => { void handleSubmit(); }}
           disabled={readOnly || busy || submittingAttachments || branchMutationPending}
           className={cn(
+            'group/composer',
             CONVERSATION_HOME_COMPOSER_LAYOUT.promptInputClassName,
             slashCommands.isOpen && 'z-50',
           )}
         >
+          {!readOnly ? <ComposerResizeHandle resize={resize} /> : null}
           <ComposerContextArea
             attachments={attachments}
             quotes={quotes}
@@ -1176,7 +1179,11 @@ export function ConversationComposer({
             onSelect={(index) => { slashCommands.selectByIndex(index); }}
             variant="inline"
           >
-            <div className="relative min-w-0">
+            <div
+              ref={inputScrollRef}
+              className={CONVERSATION_HOME_COMPOSER_LAYOUT.inputScrollContainerClassName}
+              style={resize.inputContainerStyle ?? undefined}
+            >
               {committedSlashCommand ? (
                 <span ref={committedInputLayout.adornmentRef} className={`${COMPOSER_LEADING_ADORNMENT_SLOT_CLASS_NAME} left-0 top-2`}>
                   <SlashCommandInputTag

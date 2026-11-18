@@ -1473,7 +1473,7 @@ Direct 与节点完成后的手动追问复用同一个 ACP attempt。原通知�
 
 ## 31. 2026-10-29 PR150 体验问题修复：暂停事实统一、独立草稿箱与立即发送确认
 
-状态：已实现并通过 Rust、前端接口与契约回归及浏览器验证。
+状态：上游 PR #150 的实施记录；本仓库移植时的修正与独立验收见第 32 节。
 
 根因（P1，设计缺陷）：暂停有两份存储——进程内 `AUTO_DISPATCH_SUSPENSIONS` 门禁与 durable `autoDispatchSuspended`/`suspensionReason`——但没有统一写入者。`set_dispatch_mode`、`clear_queued_prompts`、`claim_queued_prompt` 只清 durable 字段、不清门禁，导致"停止 → 切回自动 / 清空 → 新入队"后 UI 显示未暂停而后端永不自动出队；`suspend_after_failed_turn` 在栅栏判定前就设门禁，被栅栏拒绝的晚到失败仍会静默关闭自动出队。修复：`prompt_queue.rs` 新增私有原语 `apply_suspension_unlocked` / `lift_suspension_unlocked`，所有设置与解除都在文件锁内经它们同时改两份存储；失败暂停只在栅栏通过后设置门禁。四个回归测试（切回自动后可自动 claim、清空后新入队可自动 claim、被拒的失败暂停不关门禁、手动模式停止不记暂停）在修复前失败、修复后通过。
 
@@ -1487,15 +1487,15 @@ Direct 与节点完成后的手动追问复用同一个 ACP attempt。原通知�
 独立草稿箱（取代第 30 节 forceQueue）：
 
 - 原设计把"存入草稿箱"实现为强制入队，空闲时会被自动出队立即发出，草稿与发送队列语义混淆。现草稿为独立实体：`src/acp/composer_drafts.rs` 维护 task 目录下的 `composer-drafts.json`（`ComposerDraftBox { version, revision, items }`，新的在前，上限 `MAX_COMPOSER_DRAFTS = 20`），读取不建文件，写入经 `storage::with_file_lock` + 原子 `write_json`；错误为结构化 `ComposerDraftError`。
-- 命令 `list/save/take/delete_conversation_composer_draft(project_id, task_id, …)`：task id 必须是单一路径段且 task 文件存在，否则返回 `conversation.task-not-found`；save 复用 `validate_conversation_prompt_input`；take 原子删除并返回完整载荷与最新 box；delete 幂等，revision 仅在内容变化时递增。错误码 `conversation.composer-draft-empty / -full(max) / -not-found / -storage-failed`。
-- 前端 `ComposerDraftBox`（工具栏 Popover，按 projectId + taskId 作用域）自持列表状态，只接受当前作用域内 revision 不小于当前值的响应；存入采用 capture → commit/rollback，失败完整还原输入，成功后关闭 Popover、焦点回到已清空的输入框；取出仅在输入框为空时允许，取回期间输入框被填写则自动放回草稿箱。`AcpConversationComposer` 以 `draftBox` 插槽替代原 `queueDraft` 按钮。
+- 命令 `list/save/get/delete_conversation_composer_draft(project_id, task_id, …)`：task id 必须是单一路径段且 task 文件存在，否则返回 `conversation.task-not-found`；save 复用 `validate_conversation_prompt_input`；get 读取完整载荷与最新 box，输入框接收成功后再显式 delete；delete 幂等，revision 仅在内容变化时递增。错误码 `conversation.composer-draft-empty / -full(max) / -not-found / -storage-failed`。
+- 前端 `ComposerDraftBox`（工具栏 Popover，按 projectId + taskId 作用域）自持列表状态，只接受当前作用域内 revision 不小于当前值的响应；存入采用不清空输入的 snapshot → save → clearIfUnchanged；取出仅在输入框为空时允许，取回期间输入框被填写则保持原草稿不变。`AcpConversationComposer` 以 `draftBox` 插槽替代原 `queueDraft` 按钮。
 - 删除 `submit_conversation_prompt` 的 `forceQueue`/`force_queue` 全链路（命令、前端三层 API、browser mock 的 `browserQueuedExplicitDrafts`）。
 
 立即发送确认（P2）：回复进行中点击立即发送先弹 AlertDialog，含"后续不再提示"；偏好 `SettingsConfig.confirm_queued_prompt_interrupt`（`RuntimeConfig` 默认 true）经 `get/save_prompt_queue_settings` 读写，前端 `prompt-queue-settings-store` 单一 store 懒加载、最后写入胜出；设置页「高级 → 待发送」提供开关。
 
 P3：折叠箭头恢复为 `open && 'rotate-180'`（与任务列表一致）；移除冗余 `items.length > 0`；清空确认取消按钮改用 `common.cancel`；回退与本功能无关的格式化改动（`usage.rs`、`source_control.rs`）和 registry snapshot / catalog 刷新。
 
-验收证据：
+上游验收记录（原 PR 提供，不能作为当前移植分支的通过证明）：
 
 - Rust：`acp::prompt_queue` 41 项（含上述 4 项根因回归与"恢复不改模式"）、`acp::composer_drafts` 5 项；`gold-band-desktop` 单元测试 891 项全部通过（含 idle kick 的 Completed/Paused/Running/None/suspended 与草稿作用域校验），全部集成测试通过。`gold-band` lib 另有 6 项（`prompts` LF 校验、`provider::quotes`、`acp::client` 路径文本、`git::source_control`）失败，模块与 main 完全一致，原因是 worktree 以 CRLF 检出而断言要求 LF，与本次改动无关。
 - 前端：`conversation-prompt-queue` 24 项（Switch、恢复文字按钮、手动模式无暂停、确认框确认/取消/不再提示/偏好关闭、箭头方向）；`composer-draft-box` 9 项（加载计数、取出、占用禁用、取出冲突放回、存入 commit/rollback、删除、慢加载不回滚新写入、切换会话不串作用域——后两项经去掉 revision/作用域守卫的变异验证会失败）；`prompt-queue-settings-store` 3 项；`acp-runtime-continue-submit` 42 项（草稿存入不调用 submit）。
@@ -1503,6 +1503,90 @@ P3：折叠箭头恢复为 `open && 'rotate-180'`（与任务列表一致）；�
 - `acp-session-reentry-reconciliation` 与 `acp-composer-render-isolation` 的 `@/api` mock 补充 `listConversationComposerDrafts`（ACPChatDialog 挂载时新增的读取）。
 - 全量 vitest 与 main 基线逐项比对：仅剩既有失败（`acp-composer-render-isolation` 6 项、marketing/demo 依赖缺失），`chat-container-scroll-input` 单测偶发、单独复跑 3/3 通过。
 
-后续修复（2026-10-29）：草稿箱点击打开即弹出「取出到输入框」Tooltip、关闭后草稿箱图标 Tooltip 又弹出。根因是共享 `TooltipTrigger` 对任意焦点都打开，而 Radix 弹层开合会程序化转移焦点；改为仅 `:focus-visible`（键盘）焦点打开，悬停不变，全项目同类问题一并消除（`ui-tooltip-focus-visible.test.tsx` 修复前失败）。另外取出后 Popover 关闭把焦点还给触发器、导致光标不在输入框，改为存入/取出关闭时阻止 close auto-focus（`composer-draft-box` 新增焦点用例修复前失败）。真实 Chromium 中以鼠标与键盘分别验证。
+性能与过度设计：草稿箱是新增 durable 实体，因"终将发送"与"仅暂存"的生命周期不同，现有队列无法表达；单文件 ≤20 条、仅在草稿箱打开与用户操作时读写，无扫描与轮询。设置 store 为单值、一次加载；暂停原语是对既有写入点的收敛，不新增状态。
 
-性能与过度设计：草稿箱是新增 durable 实体，因"终将发送"与"仅暂存"的生命周期不同，现有队列无法表达；单文件 ≤20 条、仅在 composer 挂载与用户操作时读写，无扫描与轮询。设置 store 为单值、一次加载；暂停原语是对既有写入点的收敛，不新增状态。
+## 32. 2026-10-29：将上游 PR #150 适配到 Maling
+
+范围：仅移植 `851a86db..131434de` 的 PR #150 增量，基于已包含本仓库 #14（结构化文件引用）和 #15（上游 #148）的 `main`；保留当前 composer 栈、任务列表与 usage 的布局契约。
+
+根因与实施：
+
+- 保存是持久化交接，而非先拆走输入再补偿。保存失败或用户在等待期间继续编辑时，`restoreIfEmpty` 不能保证完整恢复；改为保留快照在输入框中，持久化成功才通过现有 `clearIfUnchanged` 清除未修改的快照。附件预览仅随成功清空释放；仍在使用的引用、附件与新编辑不被清除。
+- 草稿读取与消费分离：删除破坏式 take 和补偿 save，统一使用 `get_conversation_composer_draft` → 当前作用域接收 → `delete_conversation_composer_draft`。读取失败、输入占用、组件卸载或恢复异常均不删除原件；删除失败保留输入与存储副本，重复删除幂等。
+- 列表延迟到打开时读取，严格区分未加载、加载中、已就绪与失败并提供重试；成功写入提升本地接纳水位，旧列表结果和旧失败不能回滚新状态。组件状态按完整项目与 task identity 管理，同步 in-flight 门禁阻止同一作用域的重复变更。
+- 摘要 DTO 使用 `contentPreview`，每条最多 280 个 Unicode 字符，上限 20 条；完整正文、引用、角色与文件来源仅由单条 get 返回。沿用单个 canonical JSON 文件，不新增索引或缓存。草稿与新队列控制命令复用现有 blocking worker pool，设置写入的磁盘 I/O 同样离开 UI 调度线程。
+- 浏览器实现采用项目 + task 作用域，并与桌面 get/delete 交接契约一致。
+- 立即发送竞争时禁止再次入队，沿用原队列项与 prompt identity，并通过现有释放路径回到可重试状态。
+- 七种语言同步错误与冲突文案，使用现有组件与翻译 key，不添加依赖。
+
+回归验收：新增实际 ACPChatDialog、草稿箱组件、浏览器 API 与 Rust 存储接口测试，覆盖保存等待期间继续编辑及失败、未加载与空箱的区分、错误重试、迟到读取/失败、切换项目或会话、恢复/删除失败、重复点击、长 Unicode 正文与完整文件来源。
+
+- 前端相关 7 个文件 127 项全部通过；全量 3291 通过、1 失败、8 跳过。唯一失败是 `composer-context-alignment.test.ts` 的固定缩进断言，使用 `main`（`de98118b`）原测试与全部 7 个源码输入可复现相同失败，失败处读取的源码不在本次修改范围内。
+- 桌面端单元测试 980 通过、0 失败、4 跳过；Rust 草稿存储 8 项全部通过。workspace library 全量 1860 通过、2 失败、7 跳过；两项失败均为未修改的既有测试在 Windows 启动不足 30000 秒时执行 `Instant::now() - 30000 秒` 下溢，已用同一标准库操作的独立最小程序验证根因。
+- `npm run web:build`（含 TypeScript）、`cargo fmt --all -- --check` 与仓库 Clippy disallowed-methods 检查通过。构建保留既有分包与导入警告。
+- 内置浏览器深链验证浅/深色、640/1280/1600 宽度、长 Unicode 草稿保存与完整取出、280 字符预览、立即发送确认/取消、模式切换、停止/恢复和设置偏好；测试页面与开发服务已关闭。原生 provider 打断与 macOS/Linux 客户端行为尚未在本地实测。
+
+过度设计评审：复用 draft snapshot、既有 revision、项目/task identity、Radix Popover 和 blocking pool；草稿与发送队列的生命周期不同，保持上游的独立实体有必要，不引入额外事务模型、旁路缓存、队列或依赖。
+
+性能影响评审：队列最多 10 条、草稿最多 20 条；列表预览最多 20 × 280 字符，不加载完整详情、不执行 N+1、无轮询；单个 JSON 文件仍在显式操作时解析；草稿存取、新增队列控制与设置写入的文件锁/I/O 复用后台池。立即发送仍复用既有提交流程，未在本次全面改造旧流程的同步 I/O。设置为单值，现有订阅边界保持不变。该规模无需增加索引或性能缓存。
+
+## 33. 2026-10-30：立即发送预订与草稿快照加固
+
+状态：已实现并完成定向回归。
+
+- 立即发送修复目标项 TOCTOU：`use_conversation_queued_prompt` 先按稳定 item id claim/reserve，再检测到 busy 时停止并等待上一 turn settle。目标 NotFound/Dispatching 直接返回，不触发 stop；stop 或 settle 失败释放 reservation 回 queued，并在失败路径推送队列 lifecycle。
+- 草稿角色快照不再按显示名反查。`AcpComposerDraft` 保留 durable role snapshot，取回时渲染稳定前缀，保存/发送均用原 `profileId + content`；角色更新、删除、同名或名称含空格不改变已保存快照。
+- 会话输入新增共享 `MAX_USER_PROMPT_TEXT_CHARS = 64,000`，所有普通 prompt 与草稿保存复用同一 `conversation.prompt-too-long(maxChars)` 结构化错误；草稿因此保持 20 × 有界正文，不再形成无上限 JSON 文件。
+- 草稿保存 pending 提升到 composer 操作互斥层，存储在途时按钮与 Enter 发送均不可用；成功清空未修改快照时同步关闭 draft-attachment 右侧 Tab，再释放 Object URL。
+- 草稿保存命令统一入口先返回草稿域 empty 错误，再复用普通 prompt 校验与 role 的 Direct-only 校验；Workflow/AUTO 不再能保存“可存不可发”的角色草稿。
+- `composer-drafts.json` 加载时校验 version、条数上限和 ID 唯一性；违反 invariant 返回 `conversation.composer-draft-invalid`，坏 JSON 保持 `conversation.composer-draft-storage-failed`，两者都不会重写原文件。
+- 取出草稿时附件与结构化文件引用解析失败不再吞错：保留稳定来源，chip 标记不可用并禁用预览/打开；用户可移除后处理，发送前仍由后端最终校验。删除草稿增加 AlertDialog 二次确认，七语言同步。
+- 回归：reservation 两项 Rust 命令层测试、草稿命令/摘要 3 项、草稿存储 9 项、输入上限 1 项全部通过；前端草稿、角色快照、附件 Tab、禁发、删除确认、不可用引用与 i18n 相关 5 文件 87 项通过，生产 TypeScript 通过。浏览器深链 `/chat/projects/default/tasks/mock-task/runs/run-053` 验证保存、计数、删除确认与取消保留。
+
+## 34. 2026-11-03：队列编辑交接与生命周期投影收敛
+
+状态：已实现并完成定向回归。
+
+- 修复队列编辑的破坏式读取：新增 `read_queued_prompt` 与 `get_conversation_queued_prompt`，读取原子地把目标从 `queued` 预订为 `editing` 并返回完整 authoring payload，不消费载荷；前端按 `get → restoreIfEmpty → delete` 顺序交接，失败时调用 release 恢复为 `queued`。`editing` 项不会被自动 dispatcher claim，输入占用、迟到写入、组件卸载、读取/恢复失败或删除失败均保留原队列项；`dispatching`/`editing` 项仍拒绝新的编辑，进程重启时孤儿 `editing` reservation 自动恢复为 `queued`。
+- 草稿箱取出与队列编辑共用 composer transfer lock，避免草稿 take、队列 restore 和删除/保存操作并发写入同一个输入草稿。队列编辑期间禁用草稿箱入口与输入交互，草稿存储在途时队列编辑也不会启动。
+- 队列 lifecycle 与列表 VM 改为只投影 `contentPreview`，每条最多 280 个 Unicode 字符；完整正文仍只通过显式 get 命令读取。Browser mock、Desktop API、Tauri command registration 和类型契约同步更名，删除旧的破坏式 restore 入口，并注册显式 release 命令用于恢复失败的 `editing` reservation。
+- 草稿箱加载时复用普通 prompt 的正文、引用数量与角色正文上限校验；超限旧文件返回 `conversation.composer-draft-invalid`，不自动重写原文件。
+
+回归验收：`gold-band` prompt queue 45 项、composer drafts 11 项通过；Desktop 队列 VM 预览、草稿摘要与 task 作用域测试通过；前端 `acp-runtime-continue-submit`、`conversation-prompt-queue`、composer draft box 与 browser API 共 119 项通过；`cargo fmt --all` 与 `cargo check -p gold-band --tests` 通过。
+
+过度设计评审：没有新增 aggregate 或并行 canonical 数据；仅在既有队列生命周期内增加必要的 `editing` 状态，因为 `queued` 无法阻止自动 claim、`dispatching` 又代表 provider 发送，无法表达 composer reservation 的恢复不变量。继续复用 queue item id、revision、delete/release 命令、draft store 与输入草稿状态；transfer lock 只保护 composer 交接临界区，不覆盖文件 I/O、provider 执行或网络调用。
+
+性能影响评审：队列最多 10 条、草稿最多 20 条；lifecycle 列表从最多 64,000 字符正文/条降为最多 280 字符预览/条，完整 payload 仅在用户编辑单条时读取，无 N+1 与轮询。编辑交接增加一次有界的队列 reservation/release 原子写入，临界区不包含 UI、网络或 provider 调用；草稿 load 仍是有界单文件读取并运行于 blocking pool。
+
+## 35. 2026-11-04：队列状态可见性与编辑预订生命周期收敛
+
+状态：已实现并完成定向回归。
+
+- 根因（P1，实现不完善）：队列 lifecycle 投影只保留 `queued` 条目，`direct_prompt_queue_vm` 又把读取失败吞成空队列（`unwrap_or_default`）；`editing` 预订的进程内 owner 标记无 TTL——release 失败或 webview 在交接窗口刷新后，条目从 UI 消失、不能删除（行已不渲染、清空也保留 editing 项）、不能 claim，直到应用重启。`claim_queued_prompt` 还允许"立即发送"抢走 editing 条目，编辑冲突复用 dispatching 错误码产生"正在发送"的误导文案。
+- 修复：投影保留全部状态并携带逐条 `state`（`dispatching` 行级 pending、全部操作禁用；`editing` 行显示"取回编辑中"、仅保留删除作为显式恢复杠杆）；`ConversationPromptQueueVm` 新增 `storageError`，读取失败时面板显示错误与重试（重试走一次 `getAcpSession` 重读）并禁用队列控制，不再静默投影为空队列；edit 预订标记记录预订时刻，超过 120s TTL 后 reconcile 把孤儿回滚为 `queued` 并清除标记；`read/take/claim` 对 `editing` 返回独立 `conversation.prompt-queue-item-editing` 错误码；`claim_queued_prompt` 收紧为仅 `queued` 可 claim。标题计数与清空确认只统计 `queued` 条目；拖拽排序与 reorder 载荷只覆盖 `queued` 条目。
+- 草稿箱：组件挂载时预取同一有界摘要（≤20 条 × 280 字符预览，复用 list 命令与 single-flight 门禁）使计数徽标在首次打开前可见；取出成功但删除失败时提示"内容已取回输入框，原草稿仍保留在草稿箱"，不再只报裸存储错误。
+- 回归（先红后绿）：prompt_queue 新增 editing 边界拒绝（read/claim）、active 预订保持、TTL 过期回滚 3 项；view_models 新增全状态可见、存储失败 2 项；commands 新增错误映射 1 项；前端 conversation-prompt-queue 新增状态行、queued 计数、存储错误+重试 3 项，composer-draft-box 更新徽标预取契约并新增 take 删除失败文案 1 项。TTL 回滚测试因与标记结构改造同批落地为绿，其余新测试均先在旧行为上失败。
+- 过度设计评审：不新增 aggregate 或旁路状态；`state`/`storageError` 是既有 durable 事实的投影补全，TTL 是 owner 标记的生命周期补齐而非第二套状态机；editing 行的删除入口复用既有 delete 命令。
+- 性能影响评审：投影仍受 10 条 × 280 字符上界约束；徽标预取为单文件有界读取且挂在既有 list 命令与 in-flight 门禁下；TTL 判断为 O(1) 内存操作，reconcile 仅在孤儿出现时多一次原子写。
+
+## 36. 2026-11-04：队列与草稿附件的内容寻址所有权
+
+状态：已实现并完成定向回归。
+
+- 根因（P0，设计缺陷）：队列项与草稿的 `attachmentPaths` 直接保存前端 materialize 到系统临时目录（`%TEMP%/gold-band/conversation-attachments/`）的绝对路径。durable 实体引用进程外非 durable 存储：Windows 存储感知清理 temp 后，队列自动派发在 `validate_attachment_paths` 处以 `attachment-not-found` 失败并暂停（`failed`），草稿取出降级为不可用 chip，违背"不随 attempt、停止或重启丢失"的承诺。
+- 修复（复用既有发布器，不新建存储）：admission 路径已存在内容寻址发布机制（`<root>/user-inputs/<BLAKE3-128 摘要前缀>/<存储名>`，同文件系统 staging + `persist_noclobber` + 冲突字节校验 + 去重复用）。从 `resolve_user_input_attachments` 拆出纯字节发布函数 `publish_user_input_attachments(paths, root) -> Vec<PublishedUserInputAttachment>`（不含图片派生等内容投影重活），resolve 改为消费它、行为不变。两个 durable 写入边界改为先发布再持久化：Direct 忙时入队发布到当前 attempt 的 `user-inputs/`（`enqueue_busy_conversation_prompt`，调用点整体移入 blocking pool）；草稿保存发布到 task 级 `user-inputs/`（`persist_composer_draft`，草稿跨 attempt 存活故不挂在单一 attempt 下）。发布失败按既有 `conversation.attachment-materialize-failed` 结构化错误拒绝写入，队列项/草稿不落盘、调用方保留原输入。派发、立即发送、编辑交接、草稿取出零改动：admission 对相同字节命中相同 digest 直接复用，编辑交接/取出直接引用 durable 路径。
+- 清理策略：内容寻址 + 去重 ⇒ 不做按条删除（多实体可共享 digest，无引用计数时删除会破坏他者）；磁盘上界为每个唯一内容每存储根一份（task 与 attempt 各一）。未来需要回收时引入 digest 引用计数 GC，本轮明确不做。存量指向 temp 的旧队列项/草稿不迁移（开发阶段破坏式更新），维持既有降级行为。
+- 回归（先红后绿）：`busy_enqueue_publishes_attachments_into_durable_attempt_storage`、`composer_draft_save_publishes_attachments_into_task_storage` 均先在"路径原样保存"旧行为上失败（发布未发生、无 `user-inputs` 目录），接线后转绿；两条测试都包含"删除 OS 临时源文件后 durable 路径仍可读"的验收断言。desktop 990 项、prompt_queue 48 项、composer_drafts 11 项通过；provider 附件套件与本机基线一致（5 项 `stevendeng`/`STEVEN~1` 长短名路径断言为既有环境失败，与本次改动无关）。
+- 过度设计评审：不新增存储结构、引用计数或 GC；复用 admission 的内容寻址发布器，改动收敛在两个写入边界；前端与 browser mock 零改动。
+- 性能影响评审：入队/存草稿各增加一次有界字节拷贝（≤10 文件 × 25MB，用户显式触发）；发布运行于 blocking pool 且不持队列/草稿文件锁（锁只覆盖 JSON 原子写）；派发时 admission 命中 digest 仅做字节校验读，不重写。无轮询、无 N+1。
+
+## 37. 2026-11-04：队列/草稿附件改为存储相对引用与满箱提示
+
+状态：已实现并完成定向回归。
+
+- 缺陷（M1，§36 遗留简化）：队列项与草稿保存发布后的**绝对**路径，与 timeline 附件元数据的相对路径约定（`user-inputs/<摘要前缀>/<存储名>` + 消费端按所属目录解析）不一致；数据目录整体迁移后，timeline 附件存活而队列/草稿附件引用全部失效。
+- 修复：`publish_attachments_for_durable_reference` 改为返回存储相对引用（由 `USER_INPUT_ATTACHMENT_PREFIX + digest + 存储名` 直接构造，规避 canonical 长短名剥离问题）；新增 `resolve_stored_attachments(base, stored)`，在五个消费边界解析回绝对路径——队列编辑读取、草稿取出读取、立即发送提交、terminal 重派提交、自动出队提交。get 命令对前端仍返回绝对路径，前端与 browser mock 零改动；相对约定之前的存量绝对引用按原样消费（resolver 单一 `is_absolute` 分支，非双轨状态机）。
+- 验收：更新后的 enqueue/draft 发布测试断言存储值为 `user-inputs/...` 相对引用，并新增"整体搬迁 attempt 目录 / project 数据目录后引用仍按新位置解析成功"的迁移验收；`stored_attachment_references_resolve_relative_and_legacy_absolute` 固化 resolver 行为。desktop 991 项通过。
+- L2：草稿箱满（20/20）时保存按钮禁用并在 Tooltip 说明"删除旧草稿后可继续保存"（七语言 `acp.composerDrafts.saveFull`），复用既有 disabled-span Tooltip 模式，`data-composer-draft-save-full` 测试锚点固化。
+- 过度设计评审：不新增存储结构；相对引用与 timeline 约定对齐，resolver 是单一消费端 chokepoint；存量绝对引用按原样消费是 resolver 的一个分支而非迁移层。
+- 性能影响评审：相对引用由已计算的 digest 拼接，无额外 I/O；消费端解析为字符串 join；测试夹具发现 `App::new(root)` 的 project id 由路径哈希派生（测试专用派生，生产 project_id 由工作区注册表稳定持有），迁移验收因此直接对 project 数据目录整体搬迁验证。

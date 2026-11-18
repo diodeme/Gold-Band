@@ -3,7 +3,9 @@ import {
   AcpComposerDraftStore,
   queuedPromptToAcpComposerDraft,
 } from '@/lib/acp-composer-draft';
+import { fileReferenceIdentity } from '@/lib/file-reference-source';
 import type { AttachmentItem } from '@/lib/attachment-service';
+import type { ConversationQueuedPromptDraftVm, RightWorkspaceFileTargetVm } from '@/types';
 
 function attachment(id: string, size = 1, preview = false): AttachmentItem {
   return {
@@ -44,18 +46,70 @@ describe('ACP follow-up composer draft store', () => {
   });
 
   it('reconstructs the composer role tag from the queued role snapshot', () => {
-    expect(queuedPromptToAcpComposerDraft({
+    const role = { profileId: 'pf-dev', name: '开发', content: '完整角色定义' };
+    const restored = queuedPromptToAcpComposerDraft({
       content: '',
       quotes: [], workspaceFiles: [],
       attachmentPaths: [],
-      role: { profileId: 'pf-dev', name: '开发', content: '完整角色定义' },
-    }).content).toBe('@开发 ');
-    expect(queuedPromptToAcpComposerDraft({
+      role,
+    });
+    expect(restored.content).toBe('@开发 ');
+    expect(restored.role).toEqual(role);
+
+    const spacedRole = { profileId: 'pf-data', name: 'Data Scientist', content: 'saved snapshot' };
+    const spaced = queuedPromptToAcpComposerDraft({
       content: '爱仕达',
       quotes: [], workspaceFiles: [],
       attachmentPaths: [],
-      role: { profileId: 'pf-dev', name: '开发', content: '完整角色定义' },
-    }).content).toBe('@开发 爱仕达');
+      role: spacedRole,
+    });
+    expect(spaced.role).toEqual(spacedRole);
+    expect(spaced.content).toBe('@Data-Scientist 爱仕达');
+  });
+
+  it('restores source identity immediately and enriches a turn file without exposing its internal ID', () => {
+    const source = { kind: 'turn-file' as const, locator: { projectId: 'p', taskId: 't', runId: 'r',
+      roundId: 'round', nodeId: 'n', attemptId: 'a', branchId: 'root' }, changeSetId: 'set', changeId: 'internal-change-id' };
+    const item: ConversationQueuedPromptDraftVm = { content: 'queued', quotes: [], attachmentPaths: [], workspaceFiles: [source] };
+    const restored = queuedPromptToAcpComposerDraft(item);
+    expect(restored.workspaceFiles[0].source).toEqual(source);
+    expect(restored.workspaceFiles[0].name).not.toContain(source.changeId);
+    const target: RightWorkspaceFileTargetVm = { source, projectId: 'p', name: 'current.ts', relativePath: 'src/current.ts',
+      absolutePath: 'D:/old-worktree/src/current.ts', relativeBase: 'workspace', workspacePath: 'D:/old-worktree',
+      byteLength: 42, mimeType: 'text/plain', availability: { kind: 'available' } };
+    const enriched = queuedPromptToAcpComposerDraft(item, [], [target]);
+    expect(enriched.workspaceFiles[0]).toMatchObject({ source, name: 'current.ts', relativePath: 'src/current.ts', byteLength: 42 });
+    const store = new AcpComposerDraftStore();
+    store.restoreIfEmpty('session', restored);
+    store.write('session', { ...restored, content: 'edited while loading' });
+    expect(store.replaceIfUnchanged('session', restored, enriched)).toBe(false);
+    expect(store.read('session').content).toBe('edited while loading');
+  });
+
+  it('marks unresolved restored attachment and file references unavailable instead of silently downgrading them', () => {
+    const source = {
+      kind: 'turn-file' as const,
+      locator: { projectId: 'p', taskId: 't', runId: 'r', roundId: 'round', nodeId: 'n', attemptId: 'a', branchId: 'root' },
+      changeSetId: 'set',
+      changeId: 'change',
+    };
+    const item: ConversationQueuedPromptDraftVm = {
+      content: 'queued',
+      quotes: [],
+      attachmentPaths: ['C:/missing.png'],
+      workspaceFiles: [source],
+    };
+
+    const restored = queuedPromptToAcpComposerDraft(
+      item,
+      [],
+      [],
+      item.attachmentPaths,
+      [fileReferenceIdentity(source)],
+    );
+
+    expect(restored.attachments[0]).toMatchObject({ unavailable: true });
+    expect(restored.workspaceFiles[0]).toMatchObject({ unavailable: true });
   });
 
   it('restores text and attachments by full session locator while isolating another session', () => {

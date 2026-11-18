@@ -27,6 +27,7 @@ const wholeDiff = (id: string, text: string, path = 'src/a.ts'): ComposerQuote =
 });
 const workspaceFile = (path: string, id = 'ref-1'): ComposerWorkspaceFileRef => ({
   id,
+  source: { kind: 'workspace', projectId: 'project-1', relativePath: path },
   projectId: 'project-1',
   relativePath: path,
   name: path.split('/').at(-1) ?? path,
@@ -36,6 +37,14 @@ const workspaceFile = (path: string, id = 'ref-1'): ComposerWorkspaceFileRef => 
 });
 
 describe('composer quote contract', () => {
+  it('submits an artifact reference with its fixed origin instead of rebasing it onto a workspace', () => {
+    const source = { kind: 'artifact' as const, name: 'review.json', locator: {
+      projectId: 'project-1', taskId: 'task', runId: 'run', roundId: 'round',
+      nodeId: 'node', attemptId: 'attempt', branchId: 'main',
+    } };
+    const reference = { ...workspaceFile('artifacts/review.json'), source };
+    expect(createUserPromptSubmission('', [], null, [reference]).workspaceFiles).toEqual([source]);
+  });
   it('keeps display text and structured quotes separate from the agent prompt', () => {
     const first = addComposerQuote([], quote('one', '\n第一行\n第二行  '));
     expect(first.ok).toBe(true);
@@ -176,7 +185,7 @@ describe('composer payload contract', () => {
     const submission = createUserPromptSubmission('', [], null, first.workspaceFiles);
     expect(submission.displayText).toBe('');
     expect(submission.workspaceFiles).toEqual([
-      { projectId: 'project-1', relativePath: 'src/WorkspaceFileTree.tsx' },
+      { kind: 'workspace', projectId: 'project-1', relativePath: 'src/WorkspaceFileTree.tsx' },
     ]);
     expect(hasUserPromptPayload('', 0, null, first.workspaceFiles.length)).toBe(true);
   });
@@ -195,6 +204,7 @@ describe('composer payload contract', () => {
     expect(workspaceFilesFromRaw({
       workspaceFiles: [
         {
+          source: { kind: 'workspace', projectId: 'project-1', relativePath: 'src/a.ts' },
           projectId: 'project-1',
           relativePath: 'src/a.ts',
           canonicalPath: 'D:/workspace/src/a.ts',
@@ -206,6 +216,7 @@ describe('composer payload contract', () => {
         { projectId: 'project-1' },
       ],
     })).toEqual([{
+      source: { kind: 'workspace', projectId: 'project-1', relativePath: 'src/a.ts' },
       projectId: 'project-1',
       relativePath: 'src/a.ts',
       canonicalPath: 'D:/workspace/src/a.ts',

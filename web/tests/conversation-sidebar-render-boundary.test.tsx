@@ -53,6 +53,7 @@ const callbacks = {
   onRetryBootstrap: noop,
   onRequestWorkspaceTasks: noop,
   onRequestPinnedTasks: noop,
+  onRequestRecentTasks: noop,
   onRequestTaskRuns: noop,
   onSetResident: vi.fn().mockResolvedValue(undefined),
 };
@@ -72,9 +73,12 @@ function sidebarVm(): ConversationSidebarVm {
     pinRefs: [],
     pinnedTasks: [],
     pinnedTaskPage: { status: 'ready', nextCursor: null },
+    recentTasks: [],
+    recentTaskPage: { status: 'not-loaded', nextCursor: null },
     tasksByWorkspace: { 'workspace-a': [task('task-1'), task('task-2'), task('task-3')] },
     workspaceTaskPages: { 'workspace-a': { status: 'ready', nextCursor: null } },
     lastActiveWorkspaceId: 'workspace-a',
+    preferences: { 'workspaces.collapsed': false },
   };
 }
 

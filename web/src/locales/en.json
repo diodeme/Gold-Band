@@ -633,6 +633,9 @@
       "switchToTreeView": "Switch to folder tree",
       "copyAbsolutePath": "Copy absolute path",
       "copyRelativePath": "Copy relative path",
+      "relativeToRunDirectory": "Relative to the run directory",
+      "relativeToAttachmentDirectory": "Relative to the attachment directory",
+      "relativeToSourceWorkspace": "Relative to the source working directory",
       "openWorkspaceFile": "Open workspace file",
       "referenceToConversation": "Reference in conversation",
       "removeWorkspaceReference": "Remove file reference",
@@ -773,6 +776,12 @@
     }
   },
   "errors": {
+    "agent.launch-command-missing": "This Agent is missing its launch command. Add the command in Agent management, then run diagnostics again.",
+    "provider": {
+      "auth-required": "This Agent requires authentication before it can continue.",
+      "auth-required-missing-env": "This Agent requires authentication. Configure these environment variables first: {{env}}.",
+      "auth-required-login": "This Agent requires authentication. Complete authentication with the provider, then check again."
+    },
     "npx-cache.busy": "A cache repair is already in progress. Try again later.",
     "npx-cache.unavailable": "No repairable npx cache directory could be verified. Run diagnostics again.",
     "npx-cache.changed": "Diagnostics, configuration or cache changed. Close this dialog and try again.",
@@ -923,6 +932,7 @@
     },
     "agent": {
       "already-exists": "Agent {{agentType}} already exists.",
+      "unsupported-platform": "Agent {{agentType}} does not support the current platform ({{os}}/{{arch}}).",
       "not-configured": "Agent {{agentType}} is not configured.",
       "display-name-required": "Enter an Agent name.",
       "command-required": "Enter an Agent launch command."
@@ -946,7 +956,7 @@
       "compaction-summary-query-failed": "Could not load the compaction summary. Try again.",
       "adapter-exited": "The Agent process exited during {{method}}. Check the command, arguments, environment variables, network, and authentication.",
       "adapter-exited-with-code": "The Agent process exited during {{method}} (exit code {{exitCode}}). Check the command, arguments, environment variables, network, and authentication.",
-      "adapter-start-failed": "The Agent could not be started: {{osError}}",
+      "adapter-start-failed": "Could not start {{command}}: {{osError}}",
       "doctor-timeout": "Agent environment check timed out during {{method}}."
     },
     "app": {
@@ -998,7 +1008,10 @@
         "folder-not-found": "Selected folder could not be found",
         "folder-not-directory": "Selected path is not a folder",
         "folder-read-failed": "Selected folder could not be read completely",
-        "no-markdown-files": "No Markdown files found in the selected folder"
+        "no-markdown-files": "No Markdown files found in the selected folder",
+        "file-not-found": "Selected file could not be found",
+        "file-not-markdown": "Selected file is not a Markdown file",
+        "no-files": "No files selected"
       }
     },
     "manual-check": {
@@ -1017,7 +1030,8 @@
       "continue-launch-channel-closed": "The workflow resume did not start. Try again."
     },
     "composer": {
-      "context-limit-exceeded": "Context can contain at most {{max}} references and attachments."
+      "context-limit-exceeded": "Context can contain at most {{max}} references and attachments.",
+      "referenceUnavailable": "Reference unavailable"
     },
     "conversation": {
       "task-not-found": "This conversation could not be found.",
@@ -1037,6 +1051,7 @@
       "session-restore-unsupported": "This Agent cannot restore an existing session.",
       "history-sync-unsupported": "This Agent cannot synchronize the full history of an existing session.",
       "prompt-empty": "Enter a message to send.",
+      "prompt-too-long": "A message cannot exceed {{maxChars}} characters.",
       "prompt-quote-invalid": "The quoted text is invalid. Remove it and quote the message again.",
       "prompt-quote-limit-exceeded": "Quoted text cannot exceed {{maxChars}} characters in total.",
       "prompt-quote-diff-limit-exceeded": "Full diff quotes cannot exceed {{maxBytes}} bytes in total.",
@@ -1049,6 +1064,7 @@
       "prompt-queue-full": "The pending queue is full. It can hold up to 10 prompts.",
       "prompt-queue-item-not-found": "This queued prompt no longer exists.",
       "prompt-queue-item-dispatching": "This prompt is being sent and cannot be changed right now.",
+      "prompt-queue-item-editing": "This prompt is being restored for editing and cannot be changed right now.",
       "prompt-queue-empty": "The pending queue is empty.",
       "prompt-queue-revision-conflict": "The pending order changed. Try again after the list updates.",
       "prompt-queue-invalid-order": "The pending order is invalid. Try again.",
@@ -1063,7 +1079,8 @@
       "composer-draft-empty": "There is nothing to save.",
       "composer-draft-full": "Drafts are full. You can keep up to {{max}}.",
       "composer-draft-not-found": "This draft no longer exists.",
-      "composer-draft-storage-failed": "Failed to save drafts. Try again.",
+      "composer-draft-invalid": "The draft box data is invalid. Check the local data and try again.",
+      "composer-draft-storage-failed": "Cannot access drafts. Try again.",
       "execution-plan": {
         "not-found": "This run has no execution plan.",
         "revision-conflict": "The execution plan changed. Reload and try again.",
@@ -1082,6 +1099,24 @@
       }
     },
     "workflow": {
+      "retry": {
+        "run-active": "The Workflow is running, so the current node cannot be retried.",
+        "run-terminal": "The Workflow has ended, so the current node cannot be retried.",
+        "node-not-retryable": "The current node cannot be retried in its current state.",
+        "error-blocked": "The Workflow is blocked by an error, so the current node cannot be retried.",
+        "manual-check-pending": "The current node is waiting for manual confirmation and cannot be retried.",
+        "unsupported-node": "This node type does not support retry.",
+        "stale-locator": "The current node has changed. Continue from the latest state.",
+        "workflow-invalid": "The Workflow configuration or runtime environment is invalid, so the current node cannot be retried.",
+        "invalid-locator": "The node location is invalid. Refresh and try again.",
+        "source-sealed": "This run is sealed. It cannot continue or accept messages.",
+        "inherited-attempt": "This is an inherited node. View its session in the source run.",
+        "source-busy": "The source session is still stopping. Try again shortly.",
+        "prefix-too-large": "The required history is too large. Start a new run from the task entry.",
+        "target-missing": "This node no longer exists in the latest Workflow.",
+        "workspace-unavailable": "The source workspace is unavailable. Restore it first.",
+        "plan-changed": "The Workflow configuration changed. Refresh and try again."
+      },
       "agent-doctor-failed": "Agent {{agentType}} has not passed doctor.",
       "agent-doctor-required": "Agent {{agentType}} must pass doctor first.",
       "permission-mode-unsupported": "Agent {{agentType}} does not support permission mode {{permissionMode}}.",
@@ -1235,6 +1270,9 @@
     "customAgentIdPlaceholder": "For example, my-agent",
     "pending": "Pending",
     "configured": "Added",
+    "integrationOrigin": {
+      "communityAdapter": "Community adapter"
+    },
     "empty": "No configured agents yet",
     "createTitle": "Add Agent",
     "createDescription": "Create an agent configuration for node execution.",
@@ -1286,6 +1324,22 @@
     "diagnosing": "Diagnosing",
     "savedAndDiagnosing": "Configuration saved. Diagnosing in the background.",
     "diagnosticComplete": "Environment check completed and the diagnostic process has exited.",
+    "connectionGuide": {
+      "title": "Connection requirements",
+      "command": "Launch command",
+      "path": "PATH",
+      "pathRequirement": "{{command}} must resolve in Gold Band’s effective PATH, or select an explicit executable below.",
+      "fallback": "Fallback",
+      "installedCli": "A local {{command}} CLI can trigger controlled preparation of the ACP adapter.",
+      "preparedFallback": "Only a prepared npx cache is used; having npx available does not mean the Agent is installed.",
+      "auth": "Authentication",
+      "authRequirement": "Complete the provider login or configure supported credentials. Environment variables are saved in the local Agent configuration.",
+      "steps": "Check steps: resolve command → start ACP adapter → initialize → session/new → discover capabilities → clean up diagnostic process.",
+      "result": "Latest result",
+      "checkNow": "Check now",
+      "saveToCheck": "Saving runs the connection check automatically; the result also appears on the Agent card.",
+      "formChanged": "The form has changed. Saving will check the new configuration."
+    },
     "diagnosticFailed": "Environment check didn’t pass: {{reason}}",
     "diagnosticFailedNoReason": "Environment check didn’t pass.",
     "diagnosticFailedFallback": "Check the agent command, network, and authentication state.",
@@ -1302,7 +1356,8 @@
     "status": {
       "unknown": "Not checked",
       "healthy": "Healthy",
-      "unhealthy": "Unhealthy"
+      "unhealthy": "Unhealthy",
+      "stale": "Needs recheck"
     }
   },
   "contextManagement": {
@@ -1333,7 +1388,6 @@
     "builtInSectionDescription": "Fixed roles that can be opened as drafts and saved as new custom roles.",
     "customSectionTitle": "Custom Roles",
     "customSectionDescription": "Custom roles you created are listed here.",
-    "customProfilesPageRange": "Custom roles {{start}}-{{end}} / {{total}}",
     "builtInReadonlyHint": "Built-in roles cannot be saved directly. Save them as a new role instead.",
     "emptyContent": "No role content yet",
     "profileRequired": "Name and summary are required.",
@@ -1438,10 +1492,12 @@
       "storageProject": "Project-level. Saved to {{path}}"
     },
     "importProfile": "Import Roles",
-    "importSettingsDescription": "Batch import role Markdown files from a folder. Missing names and summaries are filled automatically.",
+    "importSettingsDescription": "Batch import from a folder or select role Markdown files directly. Missing names and summaries are filled automatically.",
     "importDynamicTemplateDescription": "When enabled, all imported roles are treated as dynamic templates; invalid bodies are downgraded to static.",
     "importPickFolder": "Choose folder and import",
     "importPickFolderTitle": "Choose a folder containing role Markdown files",
+    "importPickFiles": "Choose files and import",
+    "importPickFilesTitle": "Choose role Markdown files",
     "importResultTitle": "Import Results",
     "importResultSummary": "Scanned {{total}} files: {{success}} succeeded, {{failed}} failed.",
     "importResultImported": "Imported",
@@ -1896,7 +1952,6 @@
     "loadFailed": "Unable to load this turn's file changes",
     "partial": "Some file changes could not be captured completely",
     "showMore": "Show {{count}} more files",
-    "collapse": "Collapse file list",
     "openDiff": "View diff for {{path}}",
     "openVersion": "View this turn's version of {{path}}",
     "deletedFile": "Deleted {{path}}",
@@ -2230,6 +2285,18 @@
     "scrollForHistory": "— Scroll up for history —",
     "returnToLatest": "Back to latest",
     "rawSearchPlaceholder": "Search raw frame content…",
+    "turnRail": {
+      "older": "Earlier turns",
+      "newer": "Later turns",
+      "label": "Conversation navigation",
+      "jump": "Jump to: {{preview}}",
+      "kind": {
+        "prompt": "User prompt",
+        "tool": "Tool call",
+        "compaction": "Context compaction",
+        "permission": "Permission request"
+      }
+    },
     "rawKindPlaceholder": "Event type",
     "rawKindAll": "All events",
     "rawDirectionAll": "All directions",
@@ -2341,7 +2408,10 @@
       "interruptConfirmTitle": "Send this message now?",
       "interruptConfirmDescription": "The current reply will be stopped before this message is sent.",
       "interruptConfirmSkip": "Don't ask again",
-      "interruptConfirmAction": "Stop and send"
+      "interruptConfirmAction": "Stop and send",
+      "itemStateEditing": "Restoring for edit",
+      "itemStateSending": "Sending",
+      "storageError": "The pending queue could not be read"
     },
     "composerDrafts": {
       "title": "Drafts",
@@ -2352,7 +2422,11 @@
       "take": "Move to input",
       "takeOccupied": "Handle the current input first",
       "delete": "Delete draft",
-      "takeConflict": "The input is not empty, so the draft was put back."
+      "deleteConfirmTitle": "Delete this draft?",
+      "deleteConfirmDescription": "Its text, quotes, role, and attachment references will be removed. This cannot be undone.",
+      "takeConflict": "The input is not empty. The draft remains in the draft box.",
+      "takeDeleteKept": "Content was restored to the composer; the original draft is still saved.",
+      "saveFull": "The draft box is full; delete an older draft to save more"
     },
     "sending": "Sending",
     "sendFailed": "Send failed",
@@ -2482,13 +2556,21 @@
     "zoomIn": "Zoom in",
     "zoomOut": "Zoom out",
     "fitView": "Fit view",
+    "direction": "Layout direction",
+    "directionAuto": "Auto",
+    "directionHorizontal": "Horizontal",
+    "directionVertical": "Vertical",
+    "fullscreen": "Fullscreen",
+    "exitFullscreen": "Exit fullscreen",
     "viewNodeDetail": "View node detail",
     "viewSession": "View session",
     "viewLog": "View log",
     "copyNodeId": "Copy node id",
-    "retryFromNode": "Retry from this node",
+    "retryCurrentNode": "Retry current node",
     "layoutPending": "Arranging workflow graph",
-    "layoutFailed": "Couldn’t arrange the workflow graph"
+    "layoutFailed": "Couldn’t arrange the workflow graph",
+    "rerunFailedNode": "Rerun from this node",
+    "rerunFailedAttempt": "Rerun from {{attempt}}"
   },
   "settings": {
     "title": "Settings",
@@ -2539,6 +2621,10 @@
     "editorFontSize": "Editor font size",
     "editorFontSizeDescription": "Adjust text in CodeMirror file and diff views.",
     "resetFontSize": "Restore default font size",
+    "interfaceZoom": "Interface zoom",
+    "interfaceZoomDescription": "Scale the whole client interface; Ctrl+wheel or Ctrl+plus/minus also works.",
+    "interfaceZoomInvalid": "Enter a number between 50 and 250",
+    "resetZoom": "Restore default zoom",
     "localFonts": "Custom font stack",
     "chooseLocalFont": "Add or remove fonts",
     "localFontsDescription": "{{count}} local fonts loaded. Earlier fonts have higher priority.",
@@ -2771,13 +2857,23 @@
       "title": "Wallpaper",
       "chooseTitle": "Desktop wallpaper",
       "description": "A custom wallpaper overrides the theme wallpaper and adapts to the client size.",
-      "choose": "Choose wallpaper",
       "recent": "Recently used",
       "useRecent": "Use this recent wallpaper",
+      "deleteRecent": "Delete this wallpaper",
       "noRecent": "No recent wallpapers",
       "import": "Import new wallpaper",
-      "restoreTheme": "Restore theme wallpaper",
+      "sourceTheme": "Theme wallpaper",
+      "sourceCustom": "Custom",
+      "sourceDisable": "Disable",
+      "themeUnavailable": "The current theme has no wallpaper",
+      "none": "Disable theme wallpaper",
+      "noneActive": "Disabled",
+      "themeGallery": "Theme wallpapers",
+      "useThemeWallpaper": "Use this theme wallpaper",
       "visibility": "Wallpaper visibility",
+      "fitLabel": "Fit",
+      "fitCover": "Fill",
+      "fitContain": "Fit",
       "previewTitle": "Wallpaper preview",
       "expandPreview": "Expand wallpaper preview",
       "collapsePreview": "Collapse wallpaper preview",
@@ -2883,43 +2979,6 @@
       "confirmInterrupt": "Confirm before \"Send now\" interrupts a reply"
     }
   },
-  "multica": {
-    "taskManagement": {
-      "title": "Requirements",
-      "source": {
-        "label": "Task source",
-        "multica": "Multica"
-      },
-      "workspace": {
-        "label": "Workspace",
-        "remove": "Remove workspace",
-        "removeConfirm": "Remove this workspace? Its requirements will no longer be shown."
-      },
-      "column": {
-        "empty": "No tasks"
-      },
-      "account": {
-        "connected": "Connected",
-        "switchAccount": "Switch account",
-        "disconnect": "Disconnect"
-      }
-    },
-    "connection": {
-      "title": "Connection address settings",
-      "addressLabel": "Connection address",
-      "save": "Save",
-      "invalidUrl": "Enter a valid http(s) address",
-      "restoreDefault": "Restore default address",
-      "restoring": "Restoring…"
-    },
-    "connect": {
-      "title": "Connect Multica",
-      "body": "About to connect to:",
-      "confirm": "Connect",
-      "connecting": "Connecting…",
-      "cancelConnect": "Cancel connection"
-    }
-  },
   "conversation": {
     "title": "Conversation",
     "newConversation": "New Conversation",
@@ -2988,6 +3047,13 @@
       "loadingPinned": "Loading pinned conversations…",
       "retryPinned": "Pinned conversations failed to load. Click to retry",
       "loadMorePinned": "Load more pinned conversations",
+      "recent": "Recent",
+      "loadingRecent": "Loading recent conversations",
+      "retryRecent": "Retry recent conversations",
+      "noRecent": "No recent conversations",
+      "loadMoreRecent": "Show more recent conversations",
+      "allRecentShown": "All recent conversations shown",
+      "allConversationsShown": "All conversations shown",
       "loadingRuns": "Loading run history…",
       "retryRuns": "Run history failed to load. Click to retry",
       "loadMoreRuns": "Load more runs",
@@ -3033,7 +3099,8 @@
     "composer": {
       "multicaNeedLocalWorkspace": "Add a local workspace before running a requirement",
       "multicaBindingTag": "Multica · {{title}}",
-      "removeMulticaBinding": "Unbind task"
+      "removeMulticaBinding": "Unbind task",
+      "resizeHandle": "Drag to resize the input box"
     },
     "branchPicker": {
       "label": "Branch",
@@ -3136,7 +3203,12 @@
       "worktree": "Worktree",
       "composerRuntimeControlledPlaceholder": "This session is being controlled by the runtime, so input is temporarily unavailable",
       "composerStoppingPlaceholder": "Stopping current session…",
-      "composerStoppedPlaceholder": "This session has stopped. You can enter any message to continue the run"
+      "composerStoppedPlaceholder": "This session has stopped. You can enter any message to continue the run",
+      "nodeRerunConfirmTitle": "Rerun from {{node}} / {{attempt}}?",
+      "nodeRerunConfirmDescription": "Stop the source run, create a new Run using the latest Workflow, and execute this node and its successors again. Existing workspace changes and external actions will remain.",
+      "sourceSealed": "The source run is sealed. Its history is still available.",
+      "rerunHistoryHint": "Previous sessions remain in the source run.",
+      "viewRerunSource": "View source run"
     },
     "gitRequirement": {
       "versionUnsupportedTitle": "Git is out of date",
@@ -3215,5 +3287,171 @@
     "validationPositiveNumber": "{{field}} must be greater than 0",
     "validationTemplateNameRequired": "Template name is required",
     "validationTemplateNameDuplicated": "Template name {{name}} already exists"
+  },
+  "onboarding": {
+    "loading": "Loading",
+    "loadFailed": "Unable to read startup settings. Try again.",
+    "retry": "Retry",
+    "language": "Language",
+    "theme": "Switch theme",
+    "exit": "Exit setup",
+    "progress": "Setup progress",
+    "checking": "Checking environment…",
+    "runtimeVersion": "Recommended Node.js {{version}}; verified ranges {{ranges}}",
+    "recheck": "Check again",
+    "installGuide": "Official installation guide",
+    "discovering": "Checking local Agents…",
+    "discovered": "{{count}} available Agents detected",
+    "noAgents": "No installed Agent was detected. Install any Agent, then check again.",
+    "deferHint": "You can enter the app now and finish Agent setup later in Settings.",
+    "defaultAgent": "Default Agent",
+    "chooseAgent": "Choose an available Agent",
+    "defaultModel": "Default model",
+    "chooseModel": "Choose a model",
+    "providerDefault": "This Agent uses the provider’s default model.",
+    "checkingModel": "Reading model configuration…",
+    "permission": "Permission mode",
+    "choosePermission": "Choose a permission mode",
+    "preview": "Review changes",
+    "previewSummary": "Update {{slots}} execution configurations across {{count}} built-in workflows.",
+    "slots": "{{count}} configurations",
+    "loadMore": "Load more",
+    "back": "Back",
+    "help": "Help",
+    "skipGit": "Skip Git for now",
+    "setUpLater": "Set up later",
+    "next": "Next",
+    "apply": "Apply and finish",
+    "review": "Preview changes",
+    "repairHint": "Follow the provider’s installation or sign-in guide, then check again.",
+    "settingsTitle": "Setup and workflows",
+    "rerunTitle": "First-run setup",
+    "rerunDescription": "Check Git, the runtime, and local Agent availability again.",
+    "defaultsTitle": "Default workflows",
+    "defaultsDescription": "Set the Agent, model, and permissions for built-in workflows. Custom workflows stay unchanged.",
+    "configureDefaults": "Configure defaults",
+    "rerun": "Run setup again",
+    "npxUnavailable": "Agents launched through npx are unavailable for now. Other Agents can still be detected.",
+    "allUnavailable": "The detected Agents are unavailable. See the reasons below.",
+    "actualNode": "Node.js in use {{version}}: {{path}}",
+    "unavailable": {
+      "title": "Unavailable Agents: {{count}}",
+      "runtimeRequired": "Requires npm/npx",
+      "doctorFailed": "Diagnosis failed: {{reason}}",
+      "nodeVersionHint": "Node.js {{version}} is outside the verified range. Install {{recommended}} instead.",
+      "runtimeHint": "The runtime has issues that may prevent this Agent from starting."
+    },
+    "steps": {
+      "git": "Git",
+      "runtime": "Runtime",
+      "agent": "Agent"
+    },
+    "titles": {
+      "git": "Prepare Git",
+      "runtime": "Check the runtime",
+      "agent": "Connect an Agent and choose your default model"
+    },
+    "descriptions": {
+      "git": "Git provides version control. You can install it later.",
+      "runtime": "Some Agents launch through npx and need Node.js, npm, and npx. Other Agents are not affected.",
+      "agent": "Ready Agents are saved automatically. Choose your default model, then review and apply it to all built-in workflows."
+    },
+    "status": {
+      "ready": "Ready",
+      "missing": "Not installed",
+      "unsupported": "Unsupported version",
+      "unverified": "Unverified version",
+      "incompatible": "Inconsistent environment",
+      "failed": "Check failed",
+      "timeout": "Timed out",
+      "cancelled": "Cancelled",
+      "skipped": "Skipped",
+      "pending": "Not checked",
+      "checking": "Checking",
+      "warning": "Warning"
+    },
+    "errors": {
+      "setup": {
+        "agent-preparation-required": "Follow the provider’s installation or sign-in guide, then check again.",
+        "probe-failed": "The check failed. Check again to retry.",
+        "probe-cancelled": "The check was cancelled. Check again to continue.",
+        "environment-check-required": "Complete the runtime environment check first.",
+        "configuration-conflict": "This configuration changed elsewhere. Check Agents again and review the latest changes.",
+        "preview-stale": "The selected model or built-in workflows changed. Preview the changes again.",
+        "agent-unavailable": "This Agent is no longer ready. Check it again or choose another Agent.",
+        "model-config-invalid": "The selected model options are no longer valid. Choose the model again.",
+        "model-selection-required": "Choose a model before continuing.",
+        "permission-selection-required": "Choose a permission mode before continuing.",
+        "git-decision-required": "Install a supported Git version or explicitly skip Git.",
+        "recovery-required": "The previous save could not be recovered. Restore access to the settings folder and restart.",
+        "executable-path-invalid": "Choose an existing executable using its full path.",
+        "commit-failed": "Could not save the changes. Check folder permissions and free space, then retry.",
+        "operation-id-invalid": "The save request is invalid. Preview the changes again.",
+        "templates-initialization-required": "Built-in workflows are not initialized. Check Agents again."
+      }
+    },
+    "gitVersion": "Git {{version}} or later is required.",
+    "previousBindings": "Current bindings to replace",
+    "previousBinding": "{{slot}}: {{agent}} / {{model}}",
+    "defaultModelLabel": "Provider default",
+    "runtimeBlocked": "Runtime check did not pass",
+    "detectionFailed": "Agent detection failed. Try again.",
+    "recheckRuntime": "Check runtime again",
+    "viewRuntime": "View runtime",
+    "environmentHelp": {
+      "missing": "This tool was not found. Follow the official installation guide, then check again.",
+      "unsupported": "Install a supported version using the official guide, then check again.",
+      "unverified": "This stable version is outside the currently verified ranges, but the detected toolchain is compatible, so you can continue. Prefer a verified LTS version when practical.",
+      "incompatible": "The detected runtime combination is incompatible. Check the installation paths and try again.",
+      "failed": "The check could not finish. Check the executable path, access permissions and installation, then retry.",
+      "timeout": "The check timed out. Retry; if it keeps timing out, check whether this tool starts correctly.",
+      "cancelled": "The check was cancelled. Check again to continue."
+    },
+    "environmentReasons": {
+      "probe-unavailable": "The runtime actually used could not be confirmed. Check the installation and try again.",
+      "node-mismatch": "A different Node.js installation was used. Expected: {{expectedNodePath}}; actual: {{actualNodePath}}.",
+      "node-version-mismatch": "Node.js versions differ. Expected: {{expectedVersion}}; actual: {{actualVersion}}.",
+      "npm-metadata-missing": "The npm installation metadata could not be confirmed. Repair the Node.js/npm installation and check again.",
+      "npm-engines-incompatible": "This npm does not support the current Node.js. Required: {{nodeRange}}.",
+      "npm-version-mismatch": "npm version information differs. Output: {{expectedVersion}}; package: {{actualVersion}}.",
+      "npm-package-mismatch": "npm and npx belong to different installations. npm: {{expectedNpmRoot}}; this tool: {{actualNpmRoot}}."
+    }
+  },
+  "multica": {
+    "taskManagement": {
+      "title": "Requirements",
+      "source": {
+        "label": "Task source",
+        "multica": "Multica"
+      },
+      "workspace": {
+        "label": "Workspace",
+        "remove": "Remove workspace",
+        "removeConfirm": "Remove this workspace? Its requirements will no longer be shown."
+      },
+      "column": {
+        "empty": "No tasks"
+      },
+      "account": {
+        "connected": "Connected",
+        "switchAccount": "Switch account",
+        "disconnect": "Disconnect"
+      }
+    },
+    "connection": {
+      "title": "Connection address settings",
+      "addressLabel": "Connection address",
+      "save": "Save",
+      "invalidUrl": "Enter a valid http(s) address",
+      "restoreDefault": "Restore default address",
+      "restoring": "Restoring…"
+    },
+    "connect": {
+      "title": "Connect Multica",
+      "body": "About to connect to:",
+      "confirm": "Connect",
+      "connecting": "Connecting…",
+      "cancelConnect": "Cancel connection"
+    }
   }
 }

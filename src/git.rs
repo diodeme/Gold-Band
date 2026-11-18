@@ -258,7 +258,7 @@ impl GitPreflightError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InstalledGitVersion {
     pub(crate) display: String,
-    semantic: Version,
+    pub(crate) semantic: Version,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -327,7 +327,10 @@ fn git_command_from_executable(executable: Option<PathBuf>) -> Option<Command> {
     Some(command)
 }
 
-fn parse_git_version_from_output(stdout: &str, stderr: &str) -> Option<InstalledGitVersion> {
+pub(crate) fn parse_git_version_from_output(
+    stdout: &str,
+    stderr: &str,
+) -> Option<InstalledGitVersion> {
     stdout
         .lines()
         .chain(stderr.lines())

@@ -41,7 +41,11 @@ describe('theme preference API contract', () => {
     expect(browserPreviewState.getPreferences().appearance).toEqual(appearance);
     expect(saved.appearance).not.toBe(appearance);
     expect(saved.appearance.visualQualityByTheme).not.toBe(appearance.visualQualityByTheme);
-    expect(saved.personalization).toEqual(personalization);
+    expect(saved.personalization).toEqual({ ...personalization, wallpaper: { ...personalization.wallpaper, byColorScheme: {
+      light: { ...personalization.wallpaper.byColorScheme.light, image: { source: 'none' } },
+      dark: { ...personalization.wallpaper.byColorScheme.dark, image: { source: 'none' } },
+    } } });
+    expect(personalization.wallpaper.byColorScheme.light.image.source).toBe('theme');
     expect(saved.personalization).not.toBe(personalization);
     expect(saved.personalization.typography.ui).not.toBe(personalization.typography.ui);
   });

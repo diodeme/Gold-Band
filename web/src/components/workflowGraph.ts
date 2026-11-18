@@ -20,12 +20,9 @@ export const RUNTIME_NODE_HEIGHT = 138;
 /** Source handles of a node that can fail sit at these fractions of its height. */
 export const WORKFLOW_NODE_OUTCOME_HANDLE_RATIO = { success: 0.34, failure: 0.66 } as const;
 
-// Edge labels are rendered at 11px with horizontal padding. The minimum covers
-// zh-CN and en outcome labels; longer labels reserve their estimated width.
-export const WORKFLOW_EDGE_LABEL_WIDTH = 68;
+// Edge labels float at the route's half-length point (never inside the ELK
+// spec); the height bounds how far a label may sit from its route.
 export const WORKFLOW_EDGE_LABEL_HEIGHT = 24;
-const EDGE_LABEL_FONT_SIZE = 11;
-const EDGE_LABEL_PADDING = 20;
 const TERMINAL_LABEL_FONT_SIZE = 12;
 const TERMINAL_LABEL_PADDING = 40;
 const EDGE_CORNER_RADIUS = 8;
@@ -51,6 +48,36 @@ export function isBackwardEdge(
 export type Point = { x: number; y: number };
 export type Rect = { x: number; y: number; width: number; height: number };
 export type WorkflowLayoutOutcome = 'success' | 'failure' | 'other';
+/** ELK layered flow direction; `DOWN` stacks layers vertically for tall containers. */
+export type WorkflowLayoutDirection = 'RIGHT' | 'DOWN';
+
+export const WORKFLOW_DIRECTION_HYSTERESIS = 0.1;
+
+/**
+ * Resolves the effective layout direction for an `auto` preference from the
+ * canvas container aspect ratio. Switching between directions applies
+ * hysteresis so dragging a panel across the 1:1 ratio does not re-layout
+ * on every pixel; an explicit `previous` keeps the current direction until
+ * the ratio leaves the ±hysteresis band.
+ */
+export function autoWorkflowLayoutDirection(
+  width: number,
+  height: number,
+  previous?: WorkflowLayoutDirection,
+): WorkflowLayoutDirection {
+  if (!(width > 0) || !(height > 0)) return previous ?? 'RIGHT';
+  const ratio = height / width;
+  if (previous === 'DOWN') return ratio >= 1 - WORKFLOW_DIRECTION_HYSTERESIS ? 'DOWN' : 'RIGHT';
+  if (previous === 'RIGHT') return ratio > 1 + WORKFLOW_DIRECTION_HYSTERESIS ? 'DOWN' : 'RIGHT';
+  return ratio >= 1 ? 'DOWN' : 'RIGHT';
+}
+
+/** React Flow handle positions for one layout direction. */
+export function workflowHandlePositions(direction: WorkflowLayoutDirection) {
+  return direction === 'DOWN'
+    ? { source: Position.Bottom, target: Position.Top }
+    : { source: Position.Right, target: Position.Left };
+}
 
 export interface WorkflowLayoutNodeSpec {
   id: string;
@@ -72,7 +99,6 @@ export interface WorkflowLayoutEdgeSpec {
   from: string;
   to: string;
   outcome: WorkflowLayoutOutcome;
-  labelWidth?: number;
 }
 
 export interface WorkflowLayoutGroupSpec {
@@ -80,11 +106,13 @@ export interface WorkflowLayoutGroupSpec {
   parentId: string | null;
 }
 
-/** Minimal semantic input of a layout: model order, sizes, ports, labels and groups. */
+/** Minimal semantic input of a layout: model order, sizes, ports, labels, groups and direction. */
 export interface WorkflowLayoutSpec {
   nodes: WorkflowLayoutNodeSpec[];
   edges: WorkflowLayoutEdgeSpec[];
   groups: WorkflowLayoutGroupSpec[];
+  /** Omitted specs default to the horizontal (`RIGHT`) flow. */
+  direction?: WorkflowLayoutDirection;
 }
 
 export interface WorkflowLayoutRoute {
@@ -100,6 +128,7 @@ export interface WorkflowLayout {
   groups: Map<string, Rect>;
   edges: Map<string, WorkflowLayoutRoute>;
   bounds: Rect | null;
+  direction: WorkflowLayoutDirection;
 }
 
 /** Stable identity of a layout input; anything outside the spec cannot move nodes. */
@@ -111,10 +140,6 @@ export function estimateLabelWidth(text: string, fontSize: number, padding: numb
   let width = 0;
   for (const char of text) width += /[⺀-￯]/.test(char) ? fontSize : fontSize * 0.62;
   return Math.ceil(width + padding);
-}
-
-export function edgeLabelWidth(text: string): number {
-  return Math.max(WORKFLOW_EDGE_LABEL_WIDTH, estimateLabelWidth(text, EDGE_LABEL_FONT_SIZE, EDGE_LABEL_PADDING));
 }
 
 export function terminalNodeWidth(label: string): number {
@@ -133,9 +158,12 @@ const ELK_LAYOUT_OPTIONS: LayoutOptions = {
   // Model order is the success topology / runtime sequence: edges against it are the loops.
   'elk.layered.cycleBreaking.strategy': 'MODEL_ORDER',
   'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
+  // INTERACTIVE stacks the model-ordered main chain on one straight track.
+  // Port-perfect strategies (BRANDES_KOEPF) straighten edges instead, which
+  // drifts nodes whenever a split node's 34% success port meets a single
+  // node's 50% target port — violating the "success main chain keeps one
+  // column/row" contract (task-workflow.md).
   'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
-  'elk.layered.nodePlacement.bk.fixedAlignment': 'BALANCED',
-  // Inline label dummies already widen a layer, so the bare layer gap stays small.
   'elk.layered.spacing.nodeNodeBetweenLayers': '32',
   'elk.spacing.nodeNode': '48',
   'elk.layered.spacing.edgeNodeBetweenLayers': '24',
@@ -152,8 +180,9 @@ const ELK_GROUP_PADDING = '[top=40,left=20,bottom=20,right=20]';
 // `elk.position` for the pinned pair only; every other node is still optimized.
 const PIN_ANCHOR_POSITION = '(0,0)';
 const PINNED_POSITION = '(0,100000)';
+const PINNED_POSITION_DOWN = '(100000,0)';
 
-function port(id: string, x: number, y: number, side: 'EAST' | 'WEST'): ElkPort {
+function port(id: string, x: number, y: number, side: 'EAST' | 'WEST' | 'NORTH' | 'SOUTH'): ElkPort {
   return { id, x, y, width: 0, height: 0, layoutOptions: { 'elk.port.side': side } };
 }
 
@@ -167,27 +196,47 @@ function outPortId(node: WorkflowLayoutNodeSpec, outcome: WorkflowLayoutOutcome)
 }
 
 /**
- * The target handle shares the height of the primary (success) source handle, so a
- * success chain is laid out as one straight row instead of drifting per split node.
+ * Every main-chain port — targets, single-outcome sources, and terminal
+ * entries — shares the split success lane so mixed split/single chains get
+ * node columns, straight edges, and handle dots all on one fraction. INTERACTIVE
+ * placement keeps the columns; matching ports keep the hops straight without
+ * any label-side jogs.
  */
-export function workflowTargetHandleRatio(sourceHandles: WorkflowLayoutNodeSpec['sourceHandles']): number {
-  return sourceHandles === 'split' ? WORKFLOW_NODE_OUTCOME_HANDLE_RATIO.success : 0.5;
+export function workflowTargetHandleRatio(): number {
+  return WORKFLOW_NODE_OUTCOME_HANDLE_RATIO.success;
 }
 
-function elkNode(node: WorkflowLayoutNodeSpec, pinAnchor: boolean): ElkNode {
-  const inY = node.height * workflowTargetHandleRatio(node.sourceHandles);
+function elkNode(node: WorkflowLayoutNodeSpec, pinAnchor: boolean, direction: WorkflowLayoutDirection): ElkNode {
+  const vertical = direction === 'DOWN';
+  const inRatio = workflowTargetHandleRatio();
+  const inX = node.width * inRatio;
+  const inY = node.height * inRatio;
+  // Ports mirror across the flow axis: RIGHT flows WEST→EAST, DOWN flows NORTH→SOUTH.
+  // The pinned new-round target accepts backward edges on its downstream side.
   const ports = [
-    node.pinBelow
-      ? port(inPortId(node.id), node.width, inY, 'EAST')
-      : port(inPortId(node.id), 0, inY, 'WEST'),
+    vertical
+      ? node.pinBelow
+        ? port(inPortId(node.id), inX, node.height, 'SOUTH')
+        : port(inPortId(node.id), inX, 0, 'NORTH')
+      : node.pinBelow
+        ? port(inPortId(node.id), node.width, inY, 'EAST')
+        : port(inPortId(node.id), 0, inY, 'WEST'),
   ];
   if (node.sourceHandles === 'split') {
     ports.push(
-      port(`${node.id}::success`, node.width, node.height * WORKFLOW_NODE_OUTCOME_HANDLE_RATIO.success, 'EAST'),
-      port(`${node.id}::failure`, node.width, node.height * WORKFLOW_NODE_OUTCOME_HANDLE_RATIO.failure, 'EAST'),
+      vertical
+        ? port(`${node.id}::success`, node.width * WORKFLOW_NODE_OUTCOME_HANDLE_RATIO.success, node.height, 'SOUTH')
+        : port(`${node.id}::success`, node.width, node.height * WORKFLOW_NODE_OUTCOME_HANDLE_RATIO.success, 'EAST'),
+      vertical
+        ? port(`${node.id}::failure`, node.width * WORKFLOW_NODE_OUTCOME_HANDLE_RATIO.failure, node.height, 'SOUTH')
+        : port(`${node.id}::failure`, node.width, node.height * WORKFLOW_NODE_OUTCOME_HANDLE_RATIO.failure, 'EAST'),
     );
   } else if (node.sourceHandles === 'single') {
-    ports.push(port(`${node.id}::out`, node.width, node.height / 2, 'EAST'));
+    ports.push(
+      vertical
+        ? port(`${node.id}::out`, node.width * WORKFLOW_NODE_OUTCOME_HANDLE_RATIO.success, node.height, 'SOUTH')
+        : port(`${node.id}::out`, node.width, node.height * WORKFLOW_NODE_OUTCOME_HANDLE_RATIO.success, 'EAST'),
+    );
   }
   return {
     id: node.id,
@@ -196,7 +245,7 @@ function elkNode(node: WorkflowLayoutNodeSpec, pinAnchor: boolean): ElkNode {
     ports,
     layoutOptions: {
       'elk.portConstraints': 'FIXED_POS',
-      ...(node.pinBelow ? { 'elk.layered.layering.layerConstraint': 'FIRST', 'elk.position': PINNED_POSITION } : {}),
+      ...(node.pinBelow ? { 'elk.layered.layering.layerConstraint': 'FIRST', 'elk.position': vertical ? PINNED_POSITION_DOWN : PINNED_POSITION } : {}),
       ...(pinAnchor ? { 'elk.position': PIN_ANCHOR_POSITION } : {}),
     },
   };
@@ -237,7 +286,7 @@ export function buildElkGraph(spec: WorkflowLayoutSpec): ElkNode {
   }
   const buildChildren = (container: string | null): ElkNode[] => (childrenByContainer.get(container) ?? []).map((child) => (
     child.kind === 'node'
-      ? elkNode(nodeById.get(child.id)!, pinAnchors.has(child.id))
+      ? elkNode(nodeById.get(child.id)!, pinAnchors.has(child.id), spec.direction ?? 'RIGHT')
       : { id: child.id, layoutOptions: { 'elk.padding': ELK_GROUP_PADDING }, children: buildChildren(child.id) }
   ));
 
@@ -249,10 +298,12 @@ export function buildElkGraph(spec: WorkflowLayoutSpec): ElkNode {
       id: edge.id,
       sources: [outPortId(source, edge.outcome)],
       targets: [inPortId(edge.to)],
-      labels: edge.labelWidth
-        // ELK ignores labels without text; the text is only an identity, size comes from width.
-        ? [{ id: `${edge.id}::label`, text: edge.id, width: edge.labelWidth, height: WORKFLOW_EDGE_LABEL_HEIGHT, layoutOptions: { 'elk.edgeLabels.inline': 'true' } }]
-        : [],
+      // Edge labels are NOT attached to ELK: the inline label dummy rarely
+      // lands on the port line, and the orthogonal router then detours every
+      // edge through it — an S-shaped 5px jog that reads as squiggly lines.
+      // Labels are placed by the app at the route's half-length point instead
+      // (readElkLayout).
+      labels: [],
       layoutOptions: {
         // Keep the success spine straight; failure / retry edges may bend.
         'elk.layered.priority.straightness': priority,
@@ -265,6 +316,7 @@ export function buildElkGraph(spec: WorkflowLayoutSpec): ElkNode {
     id: 'root',
     layoutOptions: {
       ...ELK_LAYOUT_OPTIONS,
+      'elk.direction': spec.direction ?? 'RIGHT',
       'elk.layered.crossingMinimization.semiInteractive': String(pinAnchors.size > 0),
     },
     children: buildChildren(null),
@@ -273,7 +325,7 @@ export function buildElkGraph(spec: WorkflowLayoutSpec): ElkNode {
 }
 
 /** Reads absolute rects and routes from an ELK result laid out with ROOT coordinates. */
-export function readElkLayout(result: ElkNode): WorkflowLayout {
+export function readElkLayout(result: ElkNode, direction: WorkflowLayoutDirection): WorkflowLayout {
   const nodes = new Map<string, Rect>();
   const groups = new Map<string, Rect>();
   const edges = new Map<string, WorkflowLayoutRoute>();
@@ -296,11 +348,12 @@ export function readElkLayout(result: ElkNode): WorkflowLayout {
     }
   };
   visit(result);
-  return { nodes, groups, edges, bounds: layoutBounds([...nodes.values(), ...groups.values()]) };
+  return { nodes, groups, edges, bounds: layoutBounds([...nodes.values(), ...groups.values()]), direction };
 }
 
 export async function layoutWorkflowGraph(spec: WorkflowLayoutSpec, elk: ELK): Promise<WorkflowLayout> {
-  return readElkLayout(await elk.layout(buildElkGraph(spec)));
+  const direction = spec.direction ?? 'RIGHT';
+  return readElkLayout(await elk.layout(buildElkGraph(spec)), direction);
 }
 
 function layoutBounds(rects: Rect[]): Rect | null {
@@ -366,18 +419,28 @@ export function calculateCenteredViewport(bounds: { x: number; y: number; width:
 
 /**
  * Fits layout bounds like React Flow's `fitView` (padding is a fraction of the bounds).
- * When the graph cannot fit at `minZoom`, it keeps the entry side (left / top) in view,
- * where the entry and the pinned new Round target live, instead of clipping both ends.
+ * When the graph cannot fit at `minZoom`, it keeps the entry side (left when flowing
+ * RIGHT, top when flowing DOWN) — where the entry and the pinned new Round target
+ * live — in view instead of clipping both ends.
  */
-export function entryAnchoredViewport(bounds: Rect, viewport: { width: number; height: number }, options: { padding: number; minZoom: number; maxZoom: number }) {
+export function entryAnchoredViewport(bounds: Rect, viewport: { width: number; height: number }, options: { padding: number; minZoom: number; maxZoom: number; direction: WorkflowLayoutDirection }) {
   const scale = 1 + options.padding;
   const fitZoom = Math.min(viewport.width / (bounds.width * scale), viewport.height / (bounds.height * scale));
   const zoom = Math.min(options.maxZoom, Math.max(options.minZoom, fitZoom));
   const marginX = (viewport.width - viewport.width / scale) / 2;
   const marginY = (viewport.height - viewport.height / scale) / 2;
+  const centerX = viewport.width / 2 - (bounds.x + bounds.width / 2) * zoom;
+  const centerY = viewport.height / 2 - (bounds.y + bounds.height / 2) * zoom;
+  if (options.direction === 'DOWN') {
+    return {
+      x: centerX,
+      y: Math.max(centerY, marginY - bounds.y * zoom),
+      zoom,
+    };
+  }
   return {
-    x: Math.max(viewport.width / 2 - (bounds.x + bounds.width / 2) * zoom, marginX - bounds.x * zoom),
-    y: Math.max(viewport.height / 2 - (bounds.y + bounds.height / 2) * zoom, marginY - bounds.y * zoom),
+    x: Math.max(centerX, marginX - bounds.x * zoom),
+    y: centerY,
     zoom,
   };
 }
@@ -477,20 +540,34 @@ export function runtimeEdgeId(edge: Pick<GraphEdgeVm, 'from' | 'to'>, index: num
 
 /**
  * Runtime layout input. Status, traversal counts and blocked reasons are excluded
- * so status refreshes never re-run layout; labels reserve their base width.
+ * so status refreshes never re-run layout; edge labels never enter the spec —
+ * they ride the route's half-length point and cannot churn the cache.
  */
-export function runtimeGraphLayoutSpec(graph: GraphVm, translate: (value: string) => string): WorkflowLayoutSpec {
+export function runtimeGraphLayoutSpec(graph: GraphVm, translate: (value: string) => string, direction: WorkflowLayoutDirection = 'RIGHT'): WorkflowLayoutSpec {
   const order = runtimeNodeOrder(graph.nodes);
   const nodes = [...graph.nodes].sort((a, b) => order.get(a.id)! - order.get(b.id)!);
   const nodeIds = new Set(nodes.map((node) => node.id));
+  // Terminals mirror the authoring contract: $end is a passive sink and the
+  // new-round node pins back to the entry row, so its long backward edge
+  // never crowds the tail layer and push the spine off its track.
+  const isTerminal = (node: GraphNodeVm) => node.id === END_NODE
+    || node.id === NEW_ROUND_NODE
+    || node.nodeType === 'terminal';
+  const hasIncoming = (id: string) => graph.edges.some((edge) => edge.to === id && nodeIds.has(edge.from));
+  const entryNodeId = nodes.find((node) => !isTerminal(node) && !hasIncoming(node.id))?.id ?? null;
   return {
-    nodes: nodes.map((node) => ({
-      id: node.id,
-      width: NODE_WIDTH,
-      height: RUNTIME_NODE_HEIGHT,
-      sourceHandles: 'single',
-      groupId: node.dynamicGroupId ?? null,
-    })),
+    direction,
+    nodes: nodes.map((node) => {
+      const terminal = isTerminal(node);
+      return {
+        id: node.id,
+        width: terminal ? TERMINAL_NODE_WIDTH : NODE_WIDTH,
+        height: terminal ? TERMINAL_NODE_HEIGHT : RUNTIME_NODE_HEIGHT,
+        sourceHandles: terminal ? 'none' : 'single',
+        ...(node.id === NEW_ROUND_NODE && entryNodeId ? { pinBelow: entryNodeId } : {}),
+        groupId: node.dynamicGroupId ?? null,
+      };
+    }),
     edges: graph.edges.flatMap((edge, index) => {
       if (!nodeIds.has(edge.from) || !nodeIds.has(edge.to)) return [];
       const label = edge.label?.toLowerCase() ?? '';
@@ -499,7 +576,6 @@ export function runtimeGraphLayoutSpec(graph: GraphVm, translate: (value: string
         from: edge.from,
         to: edge.to,
         outcome: label === 'failure' ? 'failure' : label === 'success' ? 'success' : 'other',
-        labelWidth: edge.label ? edgeLabelWidth(translate(edge.label)) : undefined,
       }];
     }),
     groups: (graph.groups ?? []).map((group) => ({ id: group.id, parentId: group.parentGroupId ?? null })),
@@ -539,7 +615,3 @@ export function runtimeEdgeColor(
   if (label === 'failure') return 'var(--destructive)';
   return 'var(--muted-foreground)';
 }
-
-/** Shared ReactFlow node positions. */
-export const SOURCE_POS = Position.Right;
-export const TARGET_POS = Position.Left;

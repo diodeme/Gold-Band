@@ -25,7 +25,7 @@ function terminal(id: string, pinBelow: string | null = null): WorkflowLayoutSpe
 }
 
 function edge(from: string, to: string, outcome: 'success' | 'failure', index: number): WorkflowLayoutSpec['edges'][number] {
-  return { id: `${from}-${to}-${index}`, from, to, outcome, labelWidth: 68 };
+  return { id: `${from}-${to}-${index}`, from, to, outcome };
 }
 
 /** Default full workflow shape: a success spine with retry loops and a new Round from acceptance. */
@@ -81,7 +81,7 @@ function expectReadableLayout(spec: WorkflowLayoutSpec, layout: WorkflowLayout) 
   for (const item of spec.edges) {
     const route = layout.edges.get(item.id);
     expect(route, item.id).toBeDefined();
-    if (item.labelWidth) {
+    {
       expect(distanceToRoute({ x: route!.labelX, y: route!.labelY }, route!.points), `${item.id} label`).toBeLessThanOrEqual(WORKFLOW_EDGE_LABEL_HEIGHT);
     }
     for (let i = 1; i < route!.points.length; i += 1) {
@@ -100,11 +100,36 @@ describe('ELK workflow layout', () => {
     expectReadableLayout(defaultWorkflowSpec, layout);
     const spine = ['plan', 'dev', 'review', 'test', 'accept', 'cleanup', END_NODE].map((id) => layout.nodes.get(id)!);
     for (let i = 1; i < spine.length; i += 1) expect(spine[i].x).toBeGreaterThan(spine[i - 1].x + spine[i - 1].width);
-    // Target handles share the success handle height, so success hops are straight lines.
+    // Contract (task-workflow.md): the success main chain keeps one row even
+    // when it mixes split nodes (34%/66% ports) with single-outcome nodes
+    // (50%). INTERACTIVE placement trades straight edges for that alignment:
+    // success routes may jog through their inline label dummies instead of
+    // drifting the nodes, so bound the route complexity rather than demanding
+    // two-point lines.
+    const workerRows = new Set(spine.slice(0, 6).map((rect) => Math.round(rect.y)));
+    expect(workerRows.size).toBe(1);
+    // The $end terminal aligns with its inbound port instead of the worker
+    // column, so its hop from cleanup stays a straight line.
+    expect(layout.edges.get(`cleanup-${END_NODE}-8`)!.points).toHaveLength(2);
+    for (const id of ['plan-dev-0', 'dev-review-1', 'review-test-2', 'test-accept-4', 'accept-cleanup-6', `cleanup-${END_NODE}-8`]) {
+      const route = layout.edges.get(id)!;
+      // At most one orthogonal corner: a port or node-width mismatch absorbs
+      // as a single clean step; no label-dummy detours (labels ride the
+      // half-length point of the route).
+      expect(route.points.length, id).toBeLessThanOrEqual(4);
+      // The route stays inside the spine's row band — no detours around the graph.
+      const rowTop = spine[0].y;
+      const rowBottom = spine[0].y + NODE_HEIGHT;
+      for (const point of route.points) {
+        expect(point.y, id).toBeGreaterThanOrEqual(rowTop - WORKFLOW_EDGE_LABEL_HEIGHT);
+        expect(point.y, id).toBeLessThanOrEqual(rowBottom + WORKFLOW_EDGE_LABEL_HEIGHT);
+      }
+    }
+    // Port-matched success hops (split→split, 34%→34%) must be perfectly
+    // straight — the exact regression the squiggly inline labels caused.
     for (const id of ['plan-dev-0', 'dev-review-1', 'review-test-2', 'test-accept-4']) {
       expect(layout.edges.get(id)!.points, id).toHaveLength(2);
     }
-    expect(new Set(['plan', 'dev', 'review', 'test', 'accept'].map((id) => layout.nodes.get(id)!.y)).size).toBe(1);
   });
 
   it('pins the new Round target directly below the entry so it is visible on first view', async () => {

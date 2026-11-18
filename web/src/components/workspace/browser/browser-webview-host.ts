@@ -94,6 +94,23 @@ function isRightWorkspaceExempt(element: Element): boolean {
   return false;
 }
 
+/**
+ * Converts CSS-pixel bounds to physical pixels for a native child webview
+ * (browser pages and the address-suggestion overlay). `devicePixelRatio`
+ * includes the interface zoom (WebView2/WKWebView page zoom), so the child
+ * webview stays glued to its DOM slot at any zoom level; logical units alone
+ * would only track the system scale factor.
+ */
+export function toPhysicalBrowserBounds(bounds: BrowserBounds): BrowserBounds {
+  const ratio = window.devicePixelRatio || 1;
+  return {
+    x: bounds.x * ratio,
+    y: bounds.y * ratio,
+    width: bounds.width * ratio,
+    height: bounds.height * ratio,
+  };
+}
+
 function roundBounds(bounds: BrowserBounds): BrowserBounds {
   return {
     x: Math.round(bounds.x),
@@ -563,7 +580,7 @@ class BrowserWebviewHost {
         await api().browserCreatePage?.({
           pageId,
           url,
-          bounds: roundBounds(bounds),
+          bounds: toPhysicalBrowserBounds(roundBounds(bounds)),
           viewMode: browserSessionStore.page(pageId)?.viewMode ?? 'desktop',
         });
         if (!browserSessionStore.page(pageId)) {
@@ -619,7 +636,7 @@ class BrowserWebviewHost {
         if (!this.suppressed) {
           const setBounds = api().browserSetBounds;
           if (setBounds) {
-            await setBounds({ pageId, bounds: target });
+            await setBounds({ pageId, bounds: toPhysicalBrowserBounds(target) });
             this.appliedBounds.set(pageId, target);
           }
         }

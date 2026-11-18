@@ -1,0 +1,840 @@
+{
+  "schemaVersion": 2,
+  "contractVersion": 2,
+  "id": "builtin.meadow",
+  "version": "1.0.0",
+  "source": "builtin",
+  "name": {
+    "zh-CN": "春野",
+    "en": "Meadow"
+  },
+  "author": "Gold Band",
+  "capabilities": [
+    "tokens",
+    "component-recipes",
+    "avatars",
+    "wallpapers"
+  ],
+  "schemes": {
+    "light": {
+      "windowSurface": "#E4EEDF",
+      "preview": {
+        "background": "#E4EEDF",
+        "surface": "#F2F7EE",
+        "border": "#DCE5D7",
+        "primary": "#358050",
+        "foreground": "#333A31",
+        "muted": "#5C665A",
+        "success": "#35714A",
+        "danger": "#973A31"
+      },
+      "semantic": {
+        "background": "#E4EEDF",
+        "foreground": "#333A31",
+        "title": "#2A322A",
+        "card": "#F2F7EE",
+        "cardForeground": "#333A31",
+        "popover": "#F5F9F2",
+        "popoverForeground": "#333A31",
+        "primary": "#358050",
+        "primaryForeground": "#FFFFFF",
+        "secondary": "#E5EDE0",
+        "secondaryForeground": "#333A31",
+        "muted": "#E9F0E4",
+        "mutedForeground": "#5C665A",
+        "accent": "#E3EDDE",
+        "accentForeground": "#2A322A",
+        "destructive": "#B0483F",
+        "border": "#DCE5D7",
+        "input": "#C2D2BC",
+        "ring": "#358050",
+        "selection": "#D8E8D4",
+        "selectionForeground": "#2A322A",
+        "messageUser": "#ECF3E7",
+        "messageUserForeground": "#333A31",
+        "contentHeader": "#EAF2E6",
+        "contentHeaderForeground": "#333A31",
+        "conversationBackground": "#E4EEDF",
+        "conversationForeground": "#333A31",
+        "messageAssistant": "transparent",
+        "messageAssistantForeground": "#333A31",
+        "composer": "#EFF5EB",
+        "composerForeground": "#333A31",
+        "activity": "#EAF2E6",
+        "activityForeground": "#333A31",
+        "toolCard": "#EDF4E9",
+        "toolCardForeground": "#333A31",
+        "permissionCard": "#E7F0E4",
+        "permissionCardForeground": "#2E6B44",
+        "workspaceTab": "#EAF2E6",
+        "workspaceTabForeground": "#333A31",
+        "resourceHeader": "#F2F7EE",
+        "resourceHeaderForeground": "#333A31",
+        "fileTree": "#EAF2E6",
+        "fileTreeForeground": "#333A31",
+        "editor": "#FDFEFC",
+        "editorForeground": "#333A31",
+        "diffAdded": "rgba(74,158,105,.14)",
+        "diffAddedForeground": "#2E6B44",
+        "diffRemoved": "rgba(183,76,66,.12)",
+        "diffRemovedForeground": "#973A31",
+        "diffModified": "rgba(56,97,143,.12)",
+        "diffModifiedForeground": "#38618F",
+        "sidebar": "#CFE2CD",
+        "sidebarForeground": "#333A31",
+        "sidebarPrimary": "#358050",
+        "sidebarPrimaryForeground": "#FFFFFF",
+        "sidebarAccent": "#C4D9C2",
+        "sidebarAccentForeground": "#333A31",
+        "sidebarBorder": "#BCCFB9",
+        "sidebarRing": "#358050",
+        "workspace": "#E4EEDF",
+        "surfaceLow": "#EAF2E6",
+        "surfaceHigh": "#F0F6EC",
+        "lineSoft": "rgba(51,58,49,.08)",
+        "windowOutline": "rgba(51,58,49,.26)",
+        "windowEdgeShadow": "rgba(51,58,49,.07)",
+        "link": "#38618F",
+        "running": "#335C82",
+        "success": "#35714A",
+        "warning": "#6D5526",
+        "danger": "#973A31",
+        "attention": "#335C82",
+        "attentionForeground": "#FFFFFF",
+        "emphasis": "#67552A",
+        "statusRunningSurface": "rgba(51,92,130,.10)",
+        "statusRunningBorder": "rgba(51,92,130,.30)",
+        "statusSuccessSurface": "rgba(53,113,74,.10)",
+        "statusSuccessBorder": "rgba(53,113,74,.30)",
+        "statusWarningSurface": "rgba(109,85,38,.10)",
+        "statusWarningBorder": "rgba(109,85,38,.30)",
+        "statusDangerSurface": "rgba(151,58,49,.10)",
+        "statusDangerBorder": "rgba(151,58,49,.30)",
+        "permission": "#67552A",
+        "titlebar": "#CFE2CD",
+        "titlebarForeground": "#47534A",
+        "titlebarMuted": "#576558",
+        "titlebarBorder": "rgba(51,58,49,.08)",
+        "titlebarHover": "#C6DBC4",
+        "scrollbarTrack": "rgba(51,51,51,.03)",
+        "scrollbarThumb": "rgba(51,51,51,.16)",
+        "scrollbarThumbHover": "rgba(51,51,51,.28)"
+      },
+      "material": {
+        "model": "solid",
+        "surfaceOpacity": 1,
+        "borderHighlight": "transparent",
+        "surfaceOverlay": "none",
+        "blur": 0,
+        "saturate": 100,
+        "backdropBrightness": 100,
+        "backdropContrast": 100,
+        "specularHighlight": "none",
+        "edgeShadow": "0 0 0 transparent",
+        "backgroundImage": "none",
+        "textureOpacity": 0
+      },
+      "shape": {
+        "radiusControl": "0.75rem",
+        "radiusSurface": "0.75rem",
+        "radiusOverlay": "0.75rem",
+        "radiusAvatar": "999px",
+        "radiusPill": "999px",
+        "borderHairline": "1px",
+        "borderDefault": "1px",
+        "borderStrong": "2px"
+      },
+      "elevation": {
+        "none": "none",
+        "surface": "0 1px 2px rgba(0,0,0,.08)",
+        "overlay": "0 4px 16px rgba(20,28,22,.08)",
+        "floating": "0 4px 16px rgba(20,28,22,.08)",
+        "pressed": "none",
+        "pressOffset": 1
+      },
+      "motion": {
+        "mode": "smooth",
+        "durationFast": "120ms",
+        "durationNormal": "180ms",
+        "durationSlow": "240ms",
+        "easingStandard": "cubic-bezier(.16,1,.3,1)",
+        "easingEnter": "cubic-bezier(.16,1,.3,1)",
+        "easingPress": "cubic-bezier(.2,0,.2,1)"
+      },
+      "scrollbar": {
+        "width": "10px",
+        "thumbRadius": "999px",
+        "thumbInset": "3px",
+        "minLength": "24px",
+        "buttons": "none"
+      },
+      "typography": {
+        "uiStackId": "theme-ui",
+        "uiSize": 14,
+        "uiLineHeight": 1.5,
+        "editorStackId": "theme-editor",
+        "editorSize": 13,
+        "editorLineHeight": 1.55,
+        "weights": {
+          "read": 400,
+          "emphasize": 600,
+          "announce": 700
+        }
+      },
+      "avatars": {
+        "agentShape": "circle",
+        "userShape": "circle",
+        "agentAsset": null,
+        "userAsset": null
+      }
+    },
+    "dark": {
+      "windowSurface": "#202624",
+      "preview": {
+        "background": "#202624",
+        "surface": "#282F2C",
+        "border": "#39443E",
+        "primary": "#7FC494",
+        "foreground": "#E4EBE2",
+        "muted": "#9FAFA0",
+        "success": "#7FC494",
+        "danger": "#DBA49E"
+      },
+      "semantic": {
+        "background": "#202624",
+        "foreground": "#E4EBE2",
+        "title": "#EEF3EC",
+        "card": "#282F2C",
+        "cardForeground": "#E4EBE2",
+        "popover": "#2B3330",
+        "popoverForeground": "#E4EBE2",
+        "primary": "#7FC494",
+        "primaryForeground": "#12251A",
+        "secondary": "#252C29",
+        "secondaryForeground": "#E4EBE2",
+        "muted": "#242B28",
+        "mutedForeground": "#9FAFA0",
+        "accent": "#2C3A31",
+        "accentForeground": "#DFE9DC",
+        "destructive": "#C9756E",
+        "border": "#39443E",
+        "input": "#49564F",
+        "ring": "#7FC494",
+        "selection": "#31463A",
+        "selectionForeground": "#EEF3EC",
+        "messageUser": "#2E3B33",
+        "messageUserForeground": "#E4EBE2",
+        "contentHeader": "#242B28",
+        "contentHeaderForeground": "#E4EBE2",
+        "conversationBackground": "#202624",
+        "conversationForeground": "#E4EBE2",
+        "messageAssistant": "transparent",
+        "messageAssistantForeground": "#E4EBE2",
+        "composer": "#29302D",
+        "composerForeground": "#E4EBE2",
+        "activity": "#282F2C",
+        "activityForeground": "#E4EBE2",
+        "toolCard": "#242B28",
+        "toolCardForeground": "#E4EBE2",
+        "permissionCard": "#293D31",
+        "permissionCardForeground": "#A9D6B6",
+        "workspaceTab": "#282F2C",
+        "workspaceTabForeground": "#E4EBE2",
+        "resourceHeader": "#282F2C",
+        "resourceHeaderForeground": "#E4EBE2",
+        "fileTree": "#242B28",
+        "fileTreeForeground": "#E4EBE2",
+        "editor": "#303A36",
+        "editorForeground": "#E4EBE2",
+        "diffAdded": "rgba(127,196,148,.15)",
+        "diffAddedForeground": "#A9D6B6",
+        "diffRemoved": "rgba(201,117,110,.14)",
+        "diffRemovedForeground": "#DBA49E",
+        "diffModified": "rgba(144,178,214,.13)",
+        "diffModifiedForeground": "#ACC8E2",
+        "sidebar": "#1B211F",
+        "sidebarForeground": "#E4EBE2",
+        "sidebarPrimary": "#7FC494",
+        "sidebarPrimaryForeground": "#12251A",
+        "sidebarAccent": "#252C29",
+        "sidebarAccentForeground": "#E4EBE2",
+        "sidebarBorder": "#303B36",
+        "sidebarRing": "#7FC494",
+        "workspace": "#202624",
+        "surfaceLow": "#242B28",
+        "surfaceHigh": "#2D3532",
+        "lineSoft": "rgba(228,235,226,.07)",
+        "windowOutline": "rgba(228,235,226,.20)",
+        "windowEdgeShadow": "rgba(0,0,0,.38)",
+        "link": "#90B2D6",
+        "running": "#90B2D6",
+        "success": "#7FC494",
+        "warning": "#C6A96C",
+        "danger": "#DBA49E",
+        "attention": "#90B2D6",
+        "attentionForeground": "#12251A",
+        "emphasis": "#C6A96C",
+        "statusRunningSurface": "rgba(144,178,214,.12)",
+        "statusRunningBorder": "rgba(144,178,214,.32)",
+        "statusSuccessSurface": "rgba(127,196,148,.12)",
+        "statusSuccessBorder": "rgba(127,196,148,.32)",
+        "statusWarningSurface": "rgba(198,169,108,.12)",
+        "statusWarningBorder": "rgba(198,169,108,.32)",
+        "statusDangerSurface": "rgba(219,164,158,.12)",
+        "statusDangerBorder": "rgba(219,164,158,.32)",
+        "permission": "#C6A96C",
+        "titlebar": "#1B211F",
+        "titlebarForeground": "#9FAFA0",
+        "titlebarMuted": "#748376",
+        "titlebarBorder": "rgba(228,235,226,.08)",
+        "titlebarHover": "#232A27",
+        "scrollbarTrack": "rgba(235,235,235,.03)",
+        "scrollbarThumb": "rgba(235,235,235,.17)",
+        "scrollbarThumbHover": "rgba(235,235,235,.28)"
+      },
+      "material": {
+        "model": "solid",
+        "surfaceOpacity": 1,
+        "borderHighlight": "transparent",
+        "surfaceOverlay": "none",
+        "blur": 0,
+        "saturate": 100,
+        "backdropBrightness": 100,
+        "backdropContrast": 100,
+        "specularHighlight": "none",
+        "edgeShadow": "0 0 0 transparent",
+        "backgroundImage": "none",
+        "textureOpacity": 0
+      },
+      "shape": {
+        "radiusControl": "0.75rem",
+        "radiusSurface": "0.75rem",
+        "radiusOverlay": "0.75rem",
+        "radiusAvatar": "999px",
+        "radiusPill": "999px",
+        "borderHairline": "1px",
+        "borderDefault": "1px",
+        "borderStrong": "2px"
+      },
+      "elevation": {
+        "none": "none",
+        "surface": "0 1px 2px rgba(0,0,0,.08)",
+        "overlay": "0 4px 16px rgba(0,0,0,.28)",
+        "floating": "0 4px 16px rgba(0,0,0,.28)",
+        "pressed": "none",
+        "pressOffset": 1
+      },
+      "motion": {
+        "mode": "smooth",
+        "durationFast": "120ms",
+        "durationNormal": "180ms",
+        "durationSlow": "240ms",
+        "easingStandard": "cubic-bezier(.16,1,.3,1)",
+        "easingEnter": "cubic-bezier(.16,1,.3,1)",
+        "easingPress": "cubic-bezier(.2,0,.2,1)"
+      },
+      "scrollbar": {
+        "width": "10px",
+        "thumbRadius": "999px",
+        "thumbInset": "3px",
+        "minLength": "24px",
+        "buttons": "none"
+      },
+      "typography": {
+        "uiStackId": "theme-ui",
+        "uiSize": 14,
+        "uiLineHeight": 1.5,
+        "editorStackId": "theme-editor",
+        "editorSize": 13,
+        "editorLineHeight": 1.55,
+        "weights": {
+          "read": 400,
+          "emphasize": 600,
+          "announce": 700
+        }
+      },
+      "avatars": {
+        "agentShape": "circle",
+        "userShape": "circle",
+        "agentAsset": null,
+        "userAsset": null
+      }
+    }
+  },
+  "recipes": {
+    "shell": {
+      "background": "transparent",
+      "foreground": "foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "none",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "none"
+    },
+    "titlebar": {
+      "background": "sidebar",
+      "foreground": "foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "none",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color"
+    },
+    "sidebar": {
+      "background": "sidebar",
+      "foreground": "foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "none",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color"
+    },
+    "navigation-item": {
+      "background": "transparent",
+      "foreground": "foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "control",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color",
+      "states": {
+        "hover": {
+          "background": "accent",
+          "foreground": "accent-foreground"
+        },
+        "selected": {
+          "background": "accent",
+          "foreground": "accent-foreground"
+        },
+        "focus": {
+          "border": "ring"
+        }
+      }
+    },
+    "panel": {
+      "background": "card",
+      "foreground": "card-foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "none",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "surface"
+    },
+    "card": {
+      "background": "card",
+      "foreground": "card-foreground",
+      "border": "border",
+      "borderWidth": "hairline",
+      "borderStyle": "solid",
+      "radius": "surface",
+      "elevation": "surface",
+      "material": "flat",
+      "motion": "surface"
+    },
+    "composer": {
+      "background": "composer",
+      "foreground": "composer-foreground",
+      "border": "border",
+      "borderWidth": "hairline",
+      "borderStyle": "solid",
+      "radius": "overlay",
+      "elevation": "overlay",
+      "material": "elevated",
+      "motion": "surface",
+      "states": {
+        "focus": {
+          "border": "ring",
+          "elevation": "overlay"
+        }
+      }
+    },
+    "message-user": {
+      "background": "message-user",
+      "foreground": "message-user-foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "surface",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color"
+    },
+    "message-assistant": {
+      "background": "message-assistant",
+      "foreground": "message-assistant-foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "surface",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color"
+    },
+    "message-disclosure": {
+      "background": "activity",
+      "foreground": "activity-foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "control",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color"
+    },
+    "runtime-control": {
+      "background": "activity",
+      "foreground": "activity-foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "surface",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color"
+    },
+    "activity": {
+      "background": "transparent",
+      "foreground": "activity-foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "none",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color"
+    },
+    "tool-card": {
+      "background": "tool-card",
+      "foreground": "tool-card-foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "none",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color"
+    },
+    "permission-card": {
+      "background": "transparent",
+      "foreground": "permission-card-foreground",
+      "border": "border",
+      "borderWidth": "hairline",
+      "borderStyle": "solid",
+      "radius": "surface",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "surface"
+    },
+    "dialog": {
+      "background": "card",
+      "foreground": "card-foreground",
+      "border": "border",
+      "borderWidth": "hairline",
+      "borderStyle": "solid",
+      "radius": "overlay",
+      "elevation": "floating",
+      "material": "elevated",
+      "motion": "surface"
+    },
+    "sheet": {
+      "background": "card",
+      "foreground": "card-foreground",
+      "border": "border",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "none",
+      "elevation": "floating",
+      "material": "elevated",
+      "motion": "surface"
+    },
+    "popover": {
+      "background": "popover",
+      "foreground": "card-foreground",
+      "border": "border",
+      "borderWidth": "hairline",
+      "borderStyle": "solid",
+      "radius": "overlay",
+      "elevation": "overlay",
+      "material": "elevated",
+      "motion": "surface"
+    },
+    "input": {
+      "background": "surface-low",
+      "foreground": "card-foreground",
+      "border": "border",
+      "borderWidth": "default",
+      "borderStyle": "solid",
+      "radius": "control",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color",
+      "states": {
+        "focus": {
+          "border": "ring"
+        },
+        "disabled": {
+          "opacity": 0.5
+        }
+      }
+    },
+    "button-primary": {
+      "background": "primary",
+      "foreground": "primary-foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "control",
+      "elevation": "surface",
+      "material": "flat",
+      "motion": "press",
+      "states": {
+        "hover": {
+          "background": "primary",
+          "foreground": "primary-foreground",
+          "elevation": "overlay"
+        },
+        "active": {
+          "background": "primary",
+          "foreground": "primary-foreground",
+          "elevation": "pressed",
+          "press": true
+        },
+        "focus": {
+          "border": "ring"
+        },
+        "disabled": {
+          "opacity": 0.5
+        }
+      }
+    },
+    "button-secondary": {
+      "background": "surface-high",
+      "foreground": "card-foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "control",
+      "elevation": "surface",
+      "material": "flat",
+      "motion": "press",
+      "states": {
+        "hover": {
+          "background": "accent",
+          "foreground": "accent-foreground"
+        },
+        "active": {
+          "background": "accent",
+          "foreground": "accent-foreground",
+          "elevation": "pressed",
+          "press": true
+        },
+        "focus": {
+          "border": "ring"
+        },
+        "disabled": {
+          "opacity": 0.5
+        }
+      }
+    },
+    "button-ghost": {
+      "background": "transparent",
+      "foreground": "foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "control",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "press",
+      "states": {
+        "hover": {
+          "background": "accent",
+          "foreground": "accent-foreground"
+        },
+        "active": {
+          "background": "accent",
+          "foreground": "accent-foreground",
+          "press": true
+        },
+        "focus": {
+          "border": "ring"
+        },
+        "disabled": {
+          "opacity": 0.5
+        }
+      }
+    },
+    "editor": {
+      "background": "editor",
+      "foreground": "editor-foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "none",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color"
+    },
+    "diff": {
+      "background": "editor",
+      "foreground": "editor-foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "none",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color"
+    },
+    "workspace-tab": {
+      "background": "workspace-tab",
+      "foreground": "workspace-tab-foreground",
+      "border": "border",
+      "borderWidth": "hairline",
+      "borderStyle": "solid",
+      "radius": "control",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color",
+      "states": {
+        "selected": {
+          "background": "accent",
+          "foreground": "accent-foreground"
+        },
+        "focus": {
+          "border": "ring"
+        }
+      }
+    },
+    "workflow-node": {
+      "background": "card",
+      "foreground": "card-foreground",
+      "border": "border",
+      "borderWidth": "default",
+      "borderStyle": "solid",
+      "radius": "surface",
+      "elevation": "surface",
+      "material": "flat",
+      "motion": "surface",
+      "states": {
+        "selected": {
+          "background": "accent",
+          "foreground": "accent-foreground",
+          "border": "ring",
+          "elevation": "overlay"
+        }
+      }
+    },
+    "workflow-edge": {
+      "background": "transparent",
+      "foreground": "muted-foreground",
+      "border": "border",
+      "borderWidth": "default",
+      "borderStyle": "solid",
+      "radius": "control",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color",
+      "states": {
+        "selected": {
+          "foreground": "accent-foreground",
+          "border": "ring"
+        }
+      }
+    },
+    "scrollbar": {
+      "background": "transparent",
+      "foreground": "muted-foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "pill",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color"
+    }
+  },
+  "assets": {
+    "schemaVersion": 2,
+    "count": 2,
+    "totalBytes": 3680142,
+    "records": [
+      {
+        "id": "meadow-bamboo-dark",
+        "kind": "wallpaper",
+        "mediaType": "image/webp",
+        "bytes": 2097758,
+        "sha256": "0aa70c707fa3fcdb8992fef96365bbf5c5ae7c01bc9cab356d1b2bfd3ed7ed30",
+        "outputUrl": "/theme-assets/builtin.meadow/0aa70c707fa3fcdb-meadow-bamboo-dark.webp",
+        "required": true,
+        "licenseId": "meadow-inhouse",
+        "width": 2048,
+        "height": 1280
+      },
+      {
+        "id": "meadow-kite-light",
+        "kind": "wallpaper",
+        "mediaType": "image/webp",
+        "bytes": 1582384,
+        "sha256": "9093305581d4d8d751be150d2560743a93e5530ca9206e22b16ff5be13c36894",
+        "outputUrl": "/theme-assets/builtin.meadow/9093305581d4d8d7-meadow-kite-light.webp",
+        "required": true,
+        "licenseId": "meadow-inhouse",
+        "width": 2048,
+        "height": 1280
+      }
+    ]
+  },
+  "wallpapers": {
+    "light": {
+      "conversation": {
+        "assetId": "meadow-kite-light",
+        "fit": "cover",
+        "position": "center",
+        "repeat": "no-repeat",
+        "opacity": 0.9,
+        "overlayColor": "background",
+        "overlayOpacity": 0.1
+      },
+      "settings": {
+        "assetId": "meadow-kite-light",
+        "fit": "cover",
+        "position": "center",
+        "repeat": "no-repeat",
+        "opacity": 0.9,
+        "overlayColor": "background",
+        "overlayOpacity": 0.1
+      }
+    },
+    "dark": {
+      "conversation": {
+        "assetId": "meadow-bamboo-dark",
+        "fit": "cover",
+        "position": "center",
+        "repeat": "no-repeat",
+        "opacity": 0.9,
+        "overlayColor": "background",
+        "overlayOpacity": 0.08
+      },
+      "settings": {
+        "assetId": "meadow-bamboo-dark",
+        "fit": "cover",
+        "position": "center",
+        "repeat": "no-repeat",
+        "opacity": 0.9,
+        "overlayColor": "background",
+        "overlayOpacity": 0.08
+      }
+    }
+  }
+}

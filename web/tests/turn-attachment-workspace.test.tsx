@@ -7,7 +7,7 @@ import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TurnAttachmentWorkspacePanel } from '@/components/workspace/files/TurnAttachmentWorkspacePanel';
-import type { TurnAttachmentWorkspaceResource } from '@/components/workspace/right-workspace-context';
+import type { FileWorkspaceResource, TurnAttachmentWorkspaceResource } from '@/components/workspace/right-workspace-context';
 
 const { primeExternalGrantMock, releaseExternalFileAccessMock, resolveTurnAttachmentFileMock } = vi.hoisted(() => ({
   primeExternalGrantMock: vi.fn(),
@@ -25,8 +25,9 @@ vi.mock('@/components/workspace/files/file-content-store', () => ({
 }));
 
 vi.mock('@/components/workspace/files/FileWorkspacePanel', () => ({
-  FileContent: ({ resource }: { resource: { kind: string; key: string; locator: { canonicalPath: string } } }) => (
-    <output data-kind={resource.kind} data-key={resource.key} data-path={resource.locator.canonicalPath} />
+  FileContent: ({ resource }: { resource: FileWorkspaceResource }) => (
+    <output data-kind={resource.kind} data-key={resource.key} data-path={resource.locator.canonicalPath}
+      data-source={JSON.stringify(resource.source)} />
   ),
 }));
 
@@ -102,6 +103,10 @@ describe('turn attachment workspace', () => {
       expect(output?.dataset.kind).toBe('file');
       expect(output?.dataset.key).toBe(resource.key);
       expect(output?.dataset.path).toBe('C:/attempt/attachments/report.md');
+      expect(JSON.parse(output?.dataset.source ?? 'null')).toEqual({
+        kind: 'turn-attachment', locator: resource.locator,
+        changeSetId: resource.changeSetId, attachmentId: resource.attachmentId,
+      });
     } finally {
       await act(async () => root.unmount());
     }

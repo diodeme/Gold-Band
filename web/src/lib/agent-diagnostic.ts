@@ -1,4 +1,5 @@
 import type { AppErrorVm, ManagedAgentDiagnosticVm } from '@/types';
+import { AUTH_REQUIRED_ERROR_CODE, authRequiredCopy } from '@/lib/auth-required-copy';
 
 export type AgentDiagnosticTranslate = (
   key: string,
@@ -26,6 +27,9 @@ export function agentDiagnosticMessage(
   const error = agentDiagnosticError(diagnostic);
   const fallbackText = fallback ?? t('agentManagement.diagnosticFailedFallback');
   if (!error) return fallbackText;
+  if (error.code === AUTH_REQUIRED_ERROR_CODE) {
+    return authRequiredCopy(t, error.params) ?? fallbackText;
+  }
   const params = localizationParams(error.params);
   if (error.code === 'acp.adapter-exited' && params.exitCode != null) {
     return t('errors.acp.adapter-exited-with-code', {
@@ -75,7 +79,9 @@ export function agentDiagnosticBannerReason(
   diagnostic?: ManagedAgentDiagnosticVm | null,
   fallback?: string,
 ): string | null {
-  const source = stringParam(fallback) || agentDiagnosticRawReason(diagnostic) || (diagnostic ? agentDiagnosticMessage(t, diagnostic) : '');
+  const errorCode = agentDiagnosticError(diagnostic)?.code;
+  const preferLocalized = errorCode === 'acp.adapter-start-failed' || errorCode === AUTH_REQUIRED_ERROR_CODE;
+  const source = stringParam(fallback) || (preferLocalized ? agentDiagnosticMessage(t, diagnostic) : agentDiagnosticRawReason(diagnostic)) || (diagnostic ? agentDiagnosticMessage(t, diagnostic) : '');
   const line = source.split(/\r?\n/, 1)[0]?.trim() ?? '';
   if (!line) return null;
   if (line.length <= AGENT_DIAGNOSTIC_BANNER_REASON_MAX_CHARS) return line;

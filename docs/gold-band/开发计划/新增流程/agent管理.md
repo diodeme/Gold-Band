@@ -200,3 +200,21 @@ Agent 实例新增两个独立能力配置：
 - 根因：全局 npm/npx 进程计数把其他 Agent 的常驻连接当作清理前置条件。删除该计数及 Adapter/ManagedProcessGroup 接入，只保留修复操作互斥和当前 Agent 现有诊断互斥，不新增进程归属或关闭机制。
 - 回归先在原实现观察到 running_npx_adapter_does_not_block_user_confirmed_repair 因 npx-cache.busy 失败；修改后同一测试通过，确认运行中的测试 Adapter 不阻止修复且不会被终止，重复修复仍被拒绝。后端缓存模块 5 项、前端修复交互 4 项测试通过，类型检查和生产构建通过；浏览器确认七语言中的简体中文风险提示呈现。
 - 用户确认后可能中断共享缓存使用者；路径校验和逐项失败返回保持不变。修复期间等待当前已开始的诊断完成并暂缓同 Agent 后续诊断，不要求所有 Agent 退出。性能影响为减少启动链路锁与计数，无新扫描、缓存或持久状态。
+
+## 2026-11-12 陈旧诊断状态投影修复
+
+- 现象：Agent 管理页显示 CodeBuddy 诊断正常，首次引导却不展示；两处对同一诊断快照给出相反结论。
+- 根因：管理页投影只读取 `available`，引导额外校验配置 fingerprint。配置或 schema 变化使 fingerprint 变化后，旧成功快照仍被投影为“正常”，而引导将其视为不可用并静态隐藏。
+- 修复：`ManagedAgentDiagnosticVm` 增加 `stale` 状态；只有 `available=true` 且 `config_fingerprint` 与当前配置匹配时才投影为 `healthy` 和 `available=true`。旧成功快照投影为 `stale`、`available=false`，卡片显示“需重新诊断”，统一导出 `DiagnosticBadge` 供 DOM 回归验证。
+- 红测试证据：Desktop 测试原得到 `healthy`，期望 `stale`；引导接口测试对 fingerprint 变化的可用快照原得到 `Unavailable`，期望进入 `Probe`。
+- 验证：`setup_reuses_only_matching_healthy_configured_agent_diagnostics`；`stale_agent_diagnostic_is_not_projected_as_healthy`；`agent-diagnostic-status.test.tsx` 与七语言 catalog contract。
+- 过度设计复核：复用既有诊断快照、fingerprint、Doctor 单 Agent 互斥和卡片组件；不新增持久字段、state machine、缓存或队列。性能只增加每个已配置 Agent 一次有界配置序列化哈希，正常健康快照不增加外部进程。
+
+## 2026-11-16 Agent 编辑 Sheet 接入说明
+
+- 数据：`AgentCatalogEntryVm` 增加 `connectionRequirements`，由 Catalog 的 `localLaunch`、`installedCommand` 与 npx metadata 派生 `pathCommand`、`pathArgs`、`installedCli`、`npxFallback`、`npxRequiresPreparedPackage`；不新增持久字段或独立健康状态。
+- UI：新增/编辑 Sheet 顶部展示启动命令、PATH/显式路径要求、本机 CLI 与 npx 兜底、已准备缓存限制、认证要求和固定检查步骤。编辑模式复用当前诊断快照显示结果；表单已修改时禁止立即检查旧配置，新增模式提示保存后自动检查。
+- 边界：结果权威仍是 Agent Doctor 快照；说明区只做 Catalog 投影。保存后自动诊断和关闭 Sheet 的现有流程不变。
+- 测试：Desktop 覆盖 DeepSeek 直启、Claude 本机 adapter/CLI/npx fallback、WorkBuddy 已准备缓存三种 requirements；前端 DOM 覆盖 DeepSeek 新增提示、Claude 编辑时表单变化后的重新检查提示和“立即检查”抑制；七语言 catalog contract 与 TypeScript 检查纳入回归。
+
+过度设计复核：复用现有 Catalog 字段、Sheet、Doctor 和诊断快照，不新增 API、轮询、缓存或状态机。性能只增加一次 Catalog 映射和固定文本渲染，不启动新进程。

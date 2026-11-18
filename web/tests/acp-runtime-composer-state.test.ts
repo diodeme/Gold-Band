@@ -325,7 +325,7 @@ describe('deriveAcpRuntimeComposerState', () => {
   it('rejects another queued submission when the Direct queue reaches capacity', () => {
     const items = Array.from({ length: 10 }, (_, index) => ({
       id: `queued-${index}`,
-      content: `prompt ${index}`,
+      contentPreview: `prompt ${index}`,
       attachmentCount: 0,
       quoteCount: 0,
       workspaceFileCount: 0,
@@ -1337,7 +1337,7 @@ describe('mergeConversationAttemptLifecycle', () => {
         maxItems: 10,
         items: [{
           id: 'queued-1',
-          content: 'keep visible',
+          contentPreview: 'keep visible',
           attachmentCount: 0,
           quoteCount: 0,
           workspaceFileCount: 0,
@@ -1397,7 +1397,7 @@ describe('mergeConversationAttemptLifecycle', () => {
         maxItems: 10,
         items: [{
           id: 'queued-1',
-          content: 'deleted',
+          contentPreview: 'deleted',
           attachmentCount: 0,
           quoteCount: 0,
           workspaceFileCount: 0,

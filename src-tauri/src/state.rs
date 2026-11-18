@@ -3,7 +3,7 @@ use std::{
     str::FromStr,
     sync::{
         Arc, Condvar, Mutex, MutexGuard,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
 };
 
@@ -92,6 +92,7 @@ impl DesktopContext {
         let needs_workspace = resolved_repo_root.is_none();
         let repo_root = resolved_repo_root.unwrap_or(repo_root);
         let paths = GoldBandPaths::new(repo_root.clone());
+        gold_band::onboarding::initialization::initialize(&paths)?;
         let (settings, mut state) = load_configs(&paths)?;
         WorkspaceIdentityMigrator::new(&paths)
             .execute(
@@ -259,16 +260,35 @@ pub(crate) struct AgentDiagnosticGuard<'a> {
 
 impl AgentDiagnosticRuns {
     fn acquire(&self, agent_id: &ManagedAgentId) -> Result<AgentDiagnosticGuard<'_>> {
-        let active = self
+        self.acquire_cancellable(agent_id, &AtomicBool::new(false))
+    }
+
+    fn acquire_cancellable(
+        &self,
+        agent_id: &ManagedAgentId,
+        cancelled: &AtomicBool,
+    ) -> Result<AgentDiagnosticGuard<'_>> {
+        let mut active = self
             .active
             .lock()
             .map_err(|_| anyhow::anyhow!("agent diagnostic lock poisoned"))?;
-        let mut active = self
-            .available
-            .wait_while(active, |active| {
-                active.contains(agent_id) || active.len() >= MAX_CONCURRENT_AGENT_DIAGNOSTICS
-            })
-            .map_err(|_| anyhow::anyhow!("agent diagnostic lock poisoned"))?;
+        while active.contains(agent_id) || active.len() >= MAX_CONCURRENT_AGENT_DIAGNOSTICS {
+            if cancelled.load(Ordering::Acquire) {
+                anyhow::bail!(gold_band::onboarding::model::SetupError::new(
+                    "setup.probe-cancelled"
+                ));
+            }
+            active = self
+                .available
+                .wait_timeout(active, std::time::Duration::from_millis(100))
+                .map_err(|_| anyhow::anyhow!("agent diagnostic lock poisoned"))?
+                .0;
+        }
+        if cancelled.load(Ordering::Acquire) {
+            anyhow::bail!(gold_band::onboarding::model::SetupError::new(
+                "setup.probe-cancelled"
+            ));
+        }
         active.insert(agent_id.clone());
         Ok(AgentDiagnosticGuard {
             runs: self,
@@ -289,7 +309,10 @@ impl Drop for AgentDiagnosticGuard<'_> {
     }
 }
 
-fn for_each_diagnostic_agent(agent_ids: &[ManagedAgentId], probe: impl Fn(&ManagedAgentId) + Sync) {
+pub(crate) fn for_each_diagnostic_agent(
+    agent_ids: &[ManagedAgentId],
+    probe: impl Fn(&ManagedAgentId) + Sync,
+) {
     let next = AtomicUsize::new(0);
     std::thread::scope(|scope| {
         for _ in 0..agent_ids.len().min(MAX_CONCURRENT_AGENT_DIAGNOSTICS) {
@@ -303,6 +326,8 @@ fn for_each_diagnostic_agent(agent_ids: &[ManagedAgentId], probe: impl Fn(&Manag
 }
 
 pub struct DesktopState {
+    pub(crate) setup_active: AtomicBool,
+    pub(crate) business_runtime_started: AtomicBool,
     context: Mutex<DesktopContext>,
     scheduled_service: Mutex<Option<Arc<crate::scheduled_service::ScheduledTaskService>>>,
     scheduler_coordinator: Mutex<Option<crate::scheduled_runtime::SchedulerCoordinatorHandle>>,
@@ -349,6 +374,8 @@ impl DesktopState {
             GoldBandPaths::new(context.repo_root.clone()).core_db_path(),
         );
         Self {
+            setup_active: AtomicBool::new(false),
+            business_runtime_started: AtomicBool::new(false),
             context: Mutex::new(context),
             scheduled_service: Mutex::new(None),
             scheduler_coordinator: Mutex::new(None),
@@ -596,6 +623,21 @@ impl DesktopState {
             let run_path = workspace_app
                 .paths
                 .run_file(&candidate.task_id, &candidate.run_id);
+            if !run_path.is_file() {
+                if let Err(error) =
+                    workspace_app.recover_pending_node_rerun(&candidate.task_id, &candidate.run_id)
+                {
+                    report
+                        .blocked_project_ids
+                        .insert(candidate.project_id.clone());
+                    report.failures.push(ConversationWorkspaceRecoveryFailure {
+                        workspace_path: candidate.workspace_path.clone(),
+                        code: "runtime.workspace-recovery-failed",
+                        message: format!("{error:#}"),
+                    });
+                    continue;
+                }
+            }
             if !run_path.is_file() {
                 self.consume_runtime_recovery_candidate(&candidate, &mut report);
                 continue;
@@ -1075,6 +1117,45 @@ impl DesktopState {
         self.agent_diagnostic_runs.acquire(agent_id)
     }
 
+    pub(crate) fn setup_diagnostic_guard(
+        &self,
+        agent_id: &ManagedAgentId,
+        cancelled: &AtomicBool,
+    ) -> Result<AgentDiagnosticGuard<'_>> {
+        self.agent_diagnostic_runs
+            .acquire_cancellable(agent_id, cancelled)
+    }
+
+    pub(crate) fn persist_setup_success(
+        &self,
+        candidate: &gold_band::onboarding::discovery::SetupCandidate,
+        diagnostic: AgentDiagnosticState,
+        cancelled: &AtomicBool,
+    ) -> Result<()> {
+        let app = self.app()?;
+        let settings = gold_band::onboarding::discovery::register_success(
+            &app.paths,
+            candidate,
+            &diagnostic,
+            cancelled,
+        )?;
+        // The persisted snapshot already exists before any in-memory/UI publication.
+        self.agent_diagnostics
+            .lock()
+            .map_err(|_| anyhow::anyhow!("diagnostic lock poisoned"))?
+            .insert(candidate.id.clone(), diagnostic);
+        self.update_settings_config(&settings)
+    }
+
+    pub(crate) fn record_setup_model(
+        &self,
+        agent_id: &ManagedAgentId,
+        options: &serde_json::Value,
+    ) -> Result<()> {
+        self.record_model_bound_observation(agent_id, options)
+            .map(|_| ())
+    }
+
     pub fn agent_config_diagnostic_commit_guard(&self) -> Result<MutexGuard<'_, ()>> {
         self.agent_config_diagnostic_commit_lock
             .lock()
@@ -1175,7 +1256,12 @@ impl DesktopState {
         if probe.doctor.available {
             self.record_agent_commands(agent_id, &app.paths.repo_root, probe.commands.clone())?;
         }
-        let diagnostic = diagnostic_state_from_result(probe.doctor);
+        let mut diagnostic = diagnostic_state_from_result(probe.doctor);
+        diagnostic.config_fingerprint = app
+            .managed_agents()
+            .get(agent_id)
+            .map(gold_band::config::ManagedAgentConfig::diagnostic_fingerprint)
+            .transpose()?;
         // Only a successful probe can prove a model is gone; failures leave the catalogs alone.
         let catalogs = match diagnostic.capabilities.as_ref() {
             Some(capabilities) if diagnostic.available => {
@@ -1212,6 +1298,14 @@ impl DesktopState {
         &self,
         on_completed: impl Fn(&ManagedAgentId) + Sync,
     ) -> Result<()> {
+        if self.setup_active.load(Ordering::Acquire)
+            || matches!(
+                self.context()?.config.onboarding,
+                Some(gold_band::onboarding::model::OnboardingState::Pending { .. })
+            )
+        {
+            return Ok(());
+        }
         let app = self.app()?;
         let agent_ids = app.managed_agents().keys().cloned().collect::<Vec<_>>();
         let scheduled = self
@@ -1430,6 +1524,14 @@ impl DesktopState {
     }
 
     pub fn refresh_agent_command_catalogs_for_active_workspaces(&self) -> Result<()> {
+        if self.setup_active.load(Ordering::Acquire)
+            || matches!(
+                self.context()?.config.onboarding,
+                Some(gold_band::onboarding::model::OnboardingState::Pending { .. })
+            )
+        {
+            return Ok(());
+        }
         let context = self.context()?;
         let app = context.app();
         let persisted_state = app.load_state()?;
@@ -1535,6 +1637,7 @@ impl DesktopState {
 
 fn diagnostic_state_from_result(result: DoctorResult) -> AgentDiagnosticState {
     ProviderDiagnosticSnapshot {
+        config_fingerprint: None,
         available: result.available,
         error: result.error,
         checked_at: current_timestamp(),
@@ -1676,7 +1779,7 @@ fn load_configs(paths: &GoldBandPaths) -> Result<(SettingsConfig, StateConfig)> 
         }
     }
     if settings_changed {
-        write_json(&paths.user_settings_file(), &settings)?;
+        gold_band::storage::save_settings_file(&paths.user_settings_file(), &settings)?;
     }
     if avatar_migrated {
         complete_legacy_avatar_personalization(&paths.user_gold_band_dir())
@@ -2015,6 +2118,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: None,
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution,
@@ -2459,6 +2563,7 @@ mod tests {
             diagnostics.insert(
                 agent_id.clone(),
                 ProviderDiagnosticSnapshot {
+                    config_fingerprint: None,
                     available: true,
                     error: None,
                     checked_at: "100Z".into(),

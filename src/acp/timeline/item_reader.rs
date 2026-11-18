@@ -2,6 +2,9 @@ use super::*;
 use std::collections::{BTreeSet, VecDeque};
 use std::sync::{Mutex, OnceLock};
 
+#[cfg(test)]
+thread_local! { static POSITION_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 const MAX_READ_INDEXES: usize = 4;
 const MAX_READ_INDEX_BYTES: usize = 32 * 1024 * 1024;
 
@@ -15,6 +18,7 @@ pub(super) struct Position {
     pub(super) revision: u64,
     pub(super) started_seq: u64,
     tool: bool,
+    navigation_rank: Option<usize>,
     pub(super) composer: Option<ComposerPosition>,
 }
 pub(super) struct ReadIndex {
@@ -24,6 +28,7 @@ pub(super) struct ReadIndex {
     fingerprint: u64,
     pub(super) positions: HashMap<String, Position>,
     tools: BTreeSet<(u64, String)>,
+    navigation: [BTreeSet<(u64, String)>; 4],
     pub(super) composer: BTreeSet<(u64, String)>,
     pub(super) composer_by_prompt: HashMap<String, BTreeSet<(u64, String)>>,
     string_bytes: usize,
@@ -34,6 +39,11 @@ impl ReadIndex {
         self.positions.capacity() * (std::mem::size_of::<(String, Position)>() + 1)
             + self.string_bytes
             + self.key.capacity()
+            + self
+                .navigation
+                .iter()
+                .map(|set| set.len() * 96)
+                .sum::<usize>()
             + self.tools.len() * 96
             + self.composer.len() * 192
             + self.composer_by_prompt.capacity()
@@ -41,6 +51,10 @@ impl ReadIndex {
     }
 
     fn remove_secondary_indexes(&mut self, id: &str, position: &Position) {
+        if let Some(rank) = position.navigation_rank {
+            self.navigation[rank].remove(&(position.started_seq, id.to_owned()));
+            self.string_bytes = self.string_bytes.saturating_sub(id.len());
+        }
         if position.tool {
             self.tools.remove(&(position.started_seq, id.to_owned()));
             self.string_bytes = self.string_bytes.saturating_sub(id.len());
@@ -74,6 +88,10 @@ impl ReadIndex {
     }
 
     fn add_secondary_indexes(&mut self, id: &str, position: &Position) {
+        if let Some(rank) = position.navigation_rank {
+            self.navigation[rank].insert((position.started_seq, id.to_owned()));
+            self.string_bytes += id.len();
+        }
         if position.tool {
             self.tools.insert((position.started_seq, id.to_owned()));
             self.string_bytes += id.len();
@@ -136,6 +154,7 @@ impl ReadIndex {
                 let started_seq = event.started_seq.unwrap_or(event.seq);
                 let tool = matches!(event.kind.as_str(), "toolCall" | "toolCallUpdate");
                 let composer = composer_position_from_event(&event);
+                let navigation_rank = navigation_rank(&event.id, &event.kind);
                 self.insert(
                     event.id,
                     Position {
@@ -144,6 +163,7 @@ impl ReadIndex {
                         revision,
                         started_seq,
                         tool,
+                        navigation_rank,
                         composer,
                     },
                 );
@@ -190,6 +210,8 @@ pub(super) fn read_position(
         .positions
         .get(id)
         .map(|position| {
+            #[cfg(test)]
+            POSITION_READS.set(POSITION_READS.get() + 1);
             let mut file = File::open(path)?;
             file.seek(SeekFrom::Start(position.offset))?;
             let mut bytes = vec![0; position.length as usize];
@@ -238,6 +260,7 @@ pub(super) fn with_index<T>(
                 fingerprint: timeline_prefix_fingerprint(path, timeline_file_len(path))?,
                 positions: HashMap::with_capacity(index.item_locators.len()),
                 tools: BTreeSet::new(),
+                navigation: Default::default(),
                 composer: BTreeSet::new(),
                 composer_by_prompt: HashMap::new(),
                 string_bytes: 0,
@@ -245,13 +268,14 @@ pub(super) fn with_index<T>(
             for (id, locator) in index.item_locators {
                 let composer = composer_position_from_locator(&id, &locator);
                 projection.insert(
-                    id,
+                    id.clone(),
                     Position {
                         offset: locator.offset,
                         length: locator.line_length,
                         revision: locator.revision,
                         started_seq: locator.started_seq,
                         tool: matches!(locator.kind.as_str(), "toolCall" | "toolCallUpdate"),
+                        navigation_rank: navigation_rank(&id, &locator.kind),
                         composer,
                     },
                 );
@@ -298,6 +322,92 @@ fn composer_position_from_event(event: &AcpUiEvent) -> Option<ComposerPosition> 
     Some(ComposerPosition {
         text_bytes: super::composer_history::original_user_text(event)?.len(),
         prompt_identity: timeline_prompt_id(event).unwrap_or_else(|| event.id.clone()),
+    })
+}
+
+fn navigation_rank(id: &str, kind: &str) -> Option<usize> {
+    match kind {
+        "userTextDelta" if id.starts_with("gold-band-user-prompt-") => Some(0),
+        "permissionRequest" | "permission" => Some(3),
+        kind if kind.starts_with("compaction") => Some(2),
+        "toolCall" | "toolCallUpdate" => Some(1),
+        _ => None,
+    }
+}
+
+pub const TURN_INDEX_PAGE_SIZE: usize = 64;
+
+/// Reads a bounded navigation projection from the existing locator LRU. Tool
+/// bodies and artifacts are never opened; category membership is a range lookup.
+pub fn read_conversation_turn_page(
+    path: &Utf8Path,
+    before_seq: Option<u64>,
+    after_seq: Option<u64>,
+) -> Result<Vec<crate::acp::events::ConversationTurnIndexEntry>> {
+    use crate::acp::events::{
+        CONVERSATION_TURN_PREVIEW_CHARS, ConversationTurnIndexEntry, ConversationTurnKind,
+        normalize_timeline_timestamp,
+    };
+    use std::ops::Bound;
+    with_index(path, |index| {
+        let prompts = &index.navigation[0];
+        let mut selected: Vec<_> = if let Some(after) = after_seq {
+            prompts
+                .range((
+                    Bound::Included((after.saturating_add(1), String::new())),
+                    Bound::Unbounded,
+                ))
+                .take(TURN_INDEX_PAGE_SIZE)
+                .collect()
+        } else {
+            let upper = before_seq
+                .map(|seq| Bound::Excluded((seq, String::new())))
+                .unwrap_or(Bound::Unbounded);
+            prompts
+                .range((Bound::Unbounded, upper))
+                .rev()
+                .take(TURN_INDEX_PAGE_SIZE)
+                .collect()
+        };
+        selected.sort();
+        selected
+            .into_iter()
+            .map(|order @ (seq, id)| {
+                let end = prompts
+                    .range((Bound::Excluded(order.clone()), Bound::Unbounded))
+                    .next()
+                    .map(|(seq, _)| *seq)
+                    .unwrap_or(u64::MAX);
+                let rank = (1..=3)
+                    .rev()
+                    .find(|rank| {
+                        index.navigation[*rank]
+                            .range((
+                                Bound::Included((*seq, String::new())),
+                                Bound::Excluded((end, String::new())),
+                            ))
+                            .next()
+                            .is_some()
+                    })
+                    .unwrap_or(0);
+                let event = read_position(path, index, id)?
+                    .ok_or_else(|| anyhow::anyhow!("acp.timeline-index-locator-corrupt"))?
+                    .event;
+                Ok(ConversationTurnIndexEntry {
+                    seq: *seq,
+                    timestamp: normalize_timeline_timestamp(&event.timestamp),
+                    kind: match rank {
+                        3 => ConversationTurnKind::Permission,
+                        2 => ConversationTurnKind::Compaction,
+                        1 => ConversationTurnKind::Tool,
+                        _ => ConversationTurnKind::Prompt,
+                    },
+                    prompt_preview: event
+                        .content
+                        .map(|text| text.chars().take(CONVERSATION_TURN_PREVIEW_CHARS).collect()),
+                })
+            })
+            .collect()
     })
 }
 
@@ -379,6 +489,7 @@ mod tests {
             fingerprint: 0,
             positions: HashMap::new(),
             tools: BTreeSet::new(),
+            navigation: Default::default(),
             composer: BTreeSet::new(),
             composer_by_prompt: HashMap::new(),
             string_bytes: 0,
@@ -416,6 +527,7 @@ mod tests {
             fingerprint: 0,
             positions: HashMap::new(),
             tools: BTreeSet::new(),
+            navigation: Default::default(),
             composer: BTreeSet::new(),
             composer_by_prompt: HashMap::new(),
             string_bytes: 0,
@@ -428,6 +540,7 @@ mod tests {
                 revision: 1,
                 started_seq: 1,
                 tool: true,
+                navigation_rank: Some(1),
                 composer: None,
             },
         );
@@ -439,6 +552,7 @@ mod tests {
                 revision: 2,
                 started_seq: 2,
                 tool: true,
+                navigation_rank: Some(1),
                 composer: None,
             },
         );
@@ -454,9 +568,73 @@ mod tests {
                 revision: 3,
                 started_seq: 2,
                 tool: false,
+                navigation_rank: None,
                 composer: None,
             },
         );
         assert!(index.tools.is_empty());
+    }
+    #[test]
+    fn turn_navigation_pages_bound_reads_and_refresh_categories() {
+        use crate::acp::events::{ConversationTurnKind, user_prompt_event};
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut store =
+            TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+        for turn in 0..130_u64 {
+            let seq = turn * 3 + 1;
+            let prompt = user_prompt_event(
+                seq,
+                "s".into(),
+                "多字节预览".repeat(100),
+                Some(format!("prompt-{seq}")),
+                false,
+                vec![],
+            );
+            store.upsert(seq, &prompt).unwrap();
+            let mut tool = prompt.clone();
+            tool.id = format!("tool-{seq}");
+            tool.kind = "toolCall".into();
+            tool.seq = seq + 1;
+            tool.started_seq = Some(seq + 1);
+            tool.ended_seq = Some(seq + 1);
+            tool.raw = None;
+            tool.content = Some("heavy tool body".repeat(1000));
+            store.upsert(seq + 1, &tool).unwrap();
+        }
+        POSITION_READS.set(0);
+        let latest = read_conversation_turn_page(&path, None, None).unwrap();
+        assert_eq!(latest.len(), TURN_INDEX_PAGE_SIZE);
+        assert_eq!(
+            POSITION_READS.get(),
+            TURN_INDEX_PAGE_SIZE,
+            "only selected prompt records may be read"
+        );
+        assert!(
+            latest
+                .iter()
+                .all(|item| item.kind == ConversationTurnKind::Tool)
+        );
+        assert!(
+            latest
+                .iter()
+                .all(|item| item.prompt_preview.as_ref().unwrap().chars().count() == 80)
+        );
+        let older = read_conversation_turn_page(&path, Some(latest[0].seq), None).unwrap();
+        assert_eq!(older.len(), TURN_INDEX_PAGE_SIZE);
+        assert!(older.last().unwrap().seq < latest[0].seq);
+        let first = read_conversation_turn_page(&path, Some(older[0].seq), None).unwrap();
+        assert_eq!(first.len(), 2);
+        let last_seq = latest.last().unwrap().seq;
+        let mut permission =
+            user_prompt_event(last_seq + 2, "s".into(), "".into(), None, false, vec![]);
+        permission.id = "permission-last".into();
+        permission.kind = "permissionRequest".into();
+        store.upsert(last_seq + 2, &permission).unwrap();
+        POSITION_READS.set(0);
+        let refreshed = read_conversation_turn_page(&path, None, Some(last_seq - 1)).unwrap();
+        assert_eq!(refreshed.len(), 1);
+        assert_eq!(refreshed[0].kind, ConversationTurnKind::Permission);
+        assert_eq!(POSITION_READS.get(), 1);
     }
 }

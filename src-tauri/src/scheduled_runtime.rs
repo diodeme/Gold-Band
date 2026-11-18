@@ -4051,7 +4051,7 @@ mod tests {
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
             role: None,
-            workspace_files: vec![gold_band::provider::PromptWorkspaceFileRef {
+            workspace_files: vec![gold_band::provider::PromptWorkspaceFileRef::Workspace {
                 project_id: "project-b".to_string(),
                 relative_path: "src/lib.rs".to_string(),
             }],
@@ -4069,9 +4069,13 @@ mod tests {
         assert_eq!(prompt.quotes[0].text, "frozen");
 
         assert_eq!(prompt.display_text, "检查状态");
-        assert_eq!(prompt.workspace_files.len(), 1);
-        assert_eq!(prompt.workspace_files[0].project_id, "project-b");
-        assert_eq!(prompt.workspace_files[0].relative_path, "src/lib.rs");
+        assert_eq!(
+            prompt.workspace_files,
+            vec![gold_band::provider::PromptWorkspaceFileRef::Workspace {
+                project_id: "project-b".to_string(),
+                relative_path: "src/lib.rs".to_string(),
+            }]
+        );
     }
 
     #[test]
@@ -5046,6 +5050,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: None,
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -5132,6 +5137,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: None,
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -6544,6 +6550,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: None,
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -7140,6 +7147,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: None,
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: RuntimeExecutionState::new(
@@ -7191,6 +7199,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: None,
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: RuntimeExecutionState::new(
@@ -7227,6 +7236,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: None,
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: RuntimeExecutionState::new(
@@ -7252,6 +7262,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: None,
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: RuntimeExecutionState::new(

@@ -633,6 +633,9 @@
       "switchToTreeView": "フォルダーツリーに切り替える",
       "copyAbsolutePath": "絶対パスをコピーする",
       "copyRelativePath": "相対パスをコピーする",
+      "relativeToRunDirectory": "実行ディレクトリからの相対パス",
+      "relativeToAttachmentDirectory": "添付ディレクトリからの相対パス",
+      "relativeToSourceWorkspace": "参照元の作業ディレクトリからの相対パス",
       "openWorkspaceFile": "ワークスペースファイルを開く",
       "referenceToConversation": "会話で参照",
       "removeWorkspaceReference": "ファイル参照を削除",
@@ -773,6 +776,12 @@
     }
   },
   "errors": {
+    "agent.launch-command-missing": "この Agent には起動コマンドがありません。Agent 管理でコマンドを入力し、もう一度診断してください。",
+    "provider": {
+      "auth-required": "この Agent を続行するには認証が必要です。",
+      "auth-required-missing-env": "この Agent には認証が必要です。先に次の環境変数を設定してください：{{env}}。",
+      "auth-required-login": "この Agent には認証が必要です。プロバイダーの認証を完了してから、もう一度確認してください。"
+    },
     "npx-cache.busy": "キャッシュの修復中です。しばらくしてから再試行してください。",
     "npx-cache.unavailable": "修復可能な npx キャッシュを確認できません。診断を再実行してください。",
     "npx-cache.changed": "診断、設定、またはキャッシュが変更されました。ダイアログを閉じて再試行してください。",
@@ -923,6 +932,7 @@
     },
     "agent": {
       "already-exists": "Agent {{agentType}} は既に存在します。",
+      "unsupported-platform": "Agent {{agentType}} は現在のプラットフォーム（{{os}}/{{arch}}）に対応していません。",
       "not-configured": "Agent {{agentType}} は設定されていません。",
       "display-name-required": "Agent 名を入力してください。",
       "command-required": "Agent の起動コマンドを入力してください。"
@@ -946,7 +956,7 @@
       "compaction-summary-query-failed": "圧縮の要約を読み込めませんでした。もう一度お試しください。",
       "adapter-exited": "Agent プロセスは {{method}} 中に終了しました。コマンド、引数、環境変数、ネットワーク、認証を確認してください。",
       "adapter-exited-with-code": "Agent プロセスは {{method}} 中に終了しました (終了コード {{exitCode}})。コマンド、引数、環境変数、ネットワーク、認証を確認してください。",
-      "adapter-start-failed": "Agentを開始できませんでした: {{osError}}",
+      "adapter-start-failed": "{{command}} を起動できませんでした: {{osError}}",
       "doctor-timeout": "Agent環境のチェックが {{method}} 中にタイムアウトしました。"
     },
     "app": {
@@ -998,7 +1008,10 @@
         "folder-not-found": "選択したフォルダーが見つかりませんでした",
         "folder-not-directory": "選択したパスはフォルダーではありません",
         "folder-read-failed": "選択したフォルダーを完全に読み取ることができませんでした",
-        "no-markdown-files": "選択したフォルダーに Markdown ファイルが見つかりません"
+        "no-markdown-files": "選択したフォルダーに Markdown ファイルが見つかりません",
+        "file-not-found": "選択したファイルが見つかりませんでした",
+        "file-not-markdown": "選択したファイルは Markdown ファイルではありません",
+        "no-files": "ファイルが選択されていません"
       }
     },
     "manual-check": {
@@ -1017,7 +1030,8 @@
       "continue-launch-channel-closed": "ワークフローの再開は開始されませんでした。もう一度やり直してください。"
     },
     "composer": {
-      "context-limit-exceeded": "コンテキストに追加できる参照と添付ファイルは最大 {{max}} 件です。"
+      "context-limit-exceeded": "コンテキストに追加できる参照と添付ファイルは最大 {{max}} 件です。",
+      "referenceUnavailable": "参照は利用できません"
     },
     "conversation": {
       "task-not-found": "この会話は見つかりませんでした。",
@@ -1037,6 +1051,7 @@
       "session-restore-unsupported": "このAgentは既存のセッションを復元できません。",
       "history-sync-unsupported": "このAgentは、既存のセッションの完全な履歴を同期できません。",
       "prompt-empty": "送信する内容を入力してください。",
+      "prompt-too-long": "メッセージは {{maxChars}} 文字を超えることはできません。",
       "prompt-quote-invalid": "引用したテキストが無効です。削除して、もう一度引用してください。",
       "prompt-quote-limit-exceeded": "引用は合計 {{maxChars}} 文字までです。",
       "prompt-quote-diff-limit-exceeded": "完全な diff の引用は合計 {{maxBytes}} バイト以内にしてください。",
@@ -1049,6 +1064,7 @@
       "prompt-queue-full": "保留中のキューがいっぱいです。最大 10 個のプロンプトを保持できます。",
       "prompt-queue-item-not-found": "このキューに入れられたプロンプトはもう存在しません。",
       "prompt-queue-item-dispatching": "このプロンプトは送信中のため、現在変更できません。",
+      "prompt-queue-item-editing": "このプロンプトは編集用に取得中のため、現在操作できません。",
       "prompt-queue-empty": "保留中のキューは空です。",
       "prompt-queue-revision-conflict": "送信待ちの順序が変更されました。リストの更新後にもう一度試してください。",
       "prompt-queue-invalid-order": "送信待ちの順序が無効です。もう一度試してください。",
@@ -1063,7 +1079,8 @@
       "composer-draft-empty": "保存できる内容がありません。",
       "composer-draft-full": "下書きボックスがいっぱいです。最大 {{max}} 件まで保存できます。",
       "composer-draft-not-found": "この下書きはすでに存在しません。",
-      "composer-draft-storage-failed": "下書きボックスを保存できませんでした。もう一度お試しください。",
+      "composer-draft-invalid": "下書きボックスのデータが無効です。ローカルデータを確認して、再度お試しください。",
+      "composer-draft-storage-failed": "草稿ボックスにアクセスできません。再試行してください。",
       "execution-plan": {
         "not-found": "この Run には実行計画がありません。",
         "revision-conflict": "実行計画が更新されています。再読み込みしてからやり直してください。",
@@ -1082,6 +1099,24 @@
       }
     },
     "workflow": {
+      "retry": {
+        "run-active": "Workflow は実行中です。現在のノードは再試行できません。",
+        "run-terminal": "Workflow は終了しています。現在のノードは再試行できません。",
+        "node-not-retryable": "現在のノードは現在の状態では再試行できません。",
+        "error-blocked": "Workflow はエラーでブロックされています。現在のノードは再試行できません。",
+        "manual-check-pending": "現在のノードは手動確認を待っているため、再試行できません。",
+        "unsupported-node": "このノード種別は再試行に対応していません。",
+        "stale-locator": "現在のノードが変更されました。最新の状態から操作してください。",
+        "workflow-invalid": "Workflow の設定または実行環境が無効なため、現在のノードを再試行できません。",
+        "invalid-locator": "ノードの位置が無効です。更新して再試行してください。",
+        "source-sealed": "この実行は封印されているため、続行やメッセージ送信はできません。",
+        "inherited-attempt": "継承された履歴ノードです。セッションは元の実行で確認してください。",
+        "source-busy": "元のセッションを停止中です。しばらくしてから再試行してください。",
+        "prefix-too-large": "必要な履歴データが大きすぎます。タスクの先頭から新しく実行してください。",
+        "target-missing": "最新の Workflow にこのノードはありません。",
+        "workspace-unavailable": "元のワークスペースを利用できません。先に復元してください。",
+        "plan-changed": "Workflow の設定が変更されました。更新して再試行してください。"
+      },
       "agent-doctor-failed": "Agent {{agentType}} は doctor を通過していません。",
       "agent-doctor-required": "Agent {{agentType}} は先に doctor を通過する必要があります。",
       "permission-mode-unsupported": "Agent {{agentType}} は権限モード {{permissionMode}} をサポートしていません。",
@@ -1235,6 +1270,9 @@
     "customAgentIdPlaceholder": "たとえば my-agent",
     "pending": "保留中",
     "configured": "追加した",
+    "integrationOrigin": {
+      "communityAdapter": "コミュニティアダプター"
+    },
     "empty": "構成済みの Agent はまだありません",
     "createTitle": "Agentの追加",
     "createDescription": "ノード実行に使う Agent 構成を作成します。",
@@ -1286,6 +1324,22 @@
     "diagnosing": "診断中",
     "savedAndDiagnosing": "設定が保存されました。バックグラウンドで診断しています。",
     "diagnosticComplete": "環境チェックが完了し、診断プロセスが終了しました。",
+    "connectionGuide": {
+      "title": "接続要件",
+      "command": "起動コマンド",
+      "path": "PATH",
+      "pathRequirement": "{{command}} は Gold Band の有効な PATH から解決できるか、下で実行ファイルを明示してください。",
+      "fallback": "代替方法",
+      "installedCli": "ローカルの {{command}} CLI から ACP adapter の制御された準備を開始できます。",
+      "preparedFallback": "準備済みの npx キャッシュのみを使用します。npx が使えるだけでは Agent がインストール済みとは限りません。",
+      "auth": "認証",
+      "authRequirement": "プロバイダーのログインを完了するか、対応する認証情報を設定してください。環境変数はローカルの Agent 設定に保存されます。",
+      "steps": "確認手順：コマンド解決 → ACP adapter 起動 → initialize → session/new → 能力取得 → 診断プロセス終了。",
+      "result": "最新の結果",
+      "checkNow": "今すぐ確認",
+      "saveToCheck": "保存後に接続確認が自動実行され、結果は Agent カードにも表示されます。",
+      "formChanged": "フォームが変更されています。保存後に新しい設定で確認します。"
+    },
     "diagnosticFailed": "環境チェックに合格しませんでした: {{reason}}",
     "diagnosticFailedNoReason": "環境チェックに合格しませんでした。",
     "diagnosticFailedFallback": "Agent のコマンド、ネットワーク、認証状態を確認してください。",
@@ -1302,7 +1356,8 @@
     "status": {
       "unknown": "未知",
       "healthy": "正常",
-      "unhealthy": "異常"
+      "unhealthy": "異常",
+      "stale": "再診断が必要"
     }
   },
   "contextManagement": {
@@ -1333,7 +1388,6 @@
     "builtInSectionDescription": "ドラフトとして開いたり、新しいカスタム ロールとして保存したりできるロールを修正しました。",
     "customSectionTitle": "カスタムロール",
     "customSectionDescription": "ユーザーの役割はここでページ分けされます。",
-    "customProfilesPageRange": "カスタムロール {{start}}-{{end}} / {{total}}",
     "builtInReadonlyHint": "組み込みの役割を直接保存することはできません。代わりに、新しいロールとして保存してください。",
     "emptyContent": "役割内容はまだありません",
     "profileRequired": "名前と概要は必須です。",
@@ -1438,10 +1492,12 @@
       "storageProject": "プロジェクトレベル。 {{path}} に保存されました"
     },
     "importProfile": "役割のインポート",
-    "importSettingsDescription": "ロール Markdown ファイルをフォルダーからバッチインポートします。不足している名前と概要は自動的に入力されます。",
+    "importSettingsDescription": "フォルダーからバッチインポートするか、ロール Markdown ファイルを直接選択してインポートします。不足している名前と概要は自動的に入力されます。",
     "importDynamicTemplateDescription": "有効にすると、インポートされたすべての役割が動的テンプレートとして扱われます。無効なボディは静的ボディにダウングレードされます。",
     "importPickFolder": "フォルダーを選択してインポートする",
     "importPickFolderTitle": "ロールの Markdown ファイルがあるフォルダーを選択",
+    "importPickFiles": "ファイルを選択してインポートする",
+    "importPickFilesTitle": "ロールの Markdown ファイルを選択",
     "importResultTitle": "インポート結果",
     "importResultSummary": "{{total}} ファイルをスキャンし、{{success}} に成功し、{{failed}} に失敗しました。",
     "importResultImported": "インポート済み",
@@ -1896,7 +1952,6 @@
     "loadFailed": "このターンのファイル変更を読み込めません",
     "partial": "一部のファイル変更を完全にキャプチャできませんでした",
     "showMore": "{{count}} 件のファイルをさらに表示",
-    "collapse": "ファイルリストを折りたたむ",
     "openDiff": "{{path}} の差分を表示",
     "openVersion": "{{path}} のキャプチャされたバージョンを表示する",
     "deletedFile": "{{path}} を削除しました",
@@ -2230,6 +2285,18 @@
     "scrollForHistory": "— 履歴を上にスクロールします —",
     "returnToLatest": "最新に戻る",
     "rawSearchPlaceholder": "生のフレーム コンテンツを検索…",
+    "turnRail": {
+      "older": "前のターン",
+      "newer": "次のターン",
+      "label": "会話ナビゲーション",
+      "jump": "ジャンプ：{{preview}}",
+      "kind": {
+        "prompt": "ユーザーの質問",
+        "tool": "ツール呼び出し",
+        "compaction": "コンテキスト圧縮",
+        "permission": "権限リクエスト"
+      }
+    },
     "rawKindPlaceholder": "イベントの種類",
     "rawKindAll": "すべてのイベント",
     "rawDirectionAll": "全方向",
@@ -2341,7 +2408,10 @@
       "interruptConfirmTitle": "この内容を今すぐ送信しますか？",
       "interruptConfirmDescription": "現在の返信を停止してから、この内容を送信します。",
       "interruptConfirmSkip": "今後表示しない",
-      "interruptConfirmAction": "停止して送信"
+      "interruptConfirmAction": "停止して送信",
+      "itemStateEditing": "編集用に取得中",
+      "itemStateSending": "送信中",
+      "storageError": "送信待ちキューの読み取りに失敗しました"
     },
     "composerDrafts": {
       "title": "下書きボックス",
@@ -2352,7 +2422,11 @@
       "take": "入力欄に戻す",
       "takeOccupied": "先に入力欄の内容を処理してください",
       "delete": "下書きを削除",
-      "takeConflict": "入力欄に内容があるため、下書きを下書きボックスに戻しました。"
+      "deleteConfirmTitle": "この下書きを削除しますか？",
+      "deleteConfirmDescription": "本文、引用、ロール、添付参照が一緒に削除されます。この操作は取り消せません。",
+      "takeConflict": "入力欄に内容があるため、草稿は草稿ボックスに残っています。",
+      "takeDeleteKept": "内容は入力欄に戻しました。元の下書きも下書きボックスに残っています。",
+      "saveFull": "下書きボックスがいっぱいです。古い下書きを削除すると保存できます"
     },
     "sending": "送信中",
     "sendFailed": "送信に失敗しました",
@@ -2482,13 +2556,21 @@
     "zoomIn": "ズームイン",
     "zoomOut": "ズームアウト",
     "fitView": "表示に合わせる",
+    "direction": "レイアウト方向",
+    "directionAuto": "自動",
+    "directionHorizontal": "横方向",
+    "directionVertical": "縦方向",
+    "fullscreen": "全画面表示",
+    "exitFullscreen": "全画面を終了",
     "viewNodeDetail": "ノードの詳細を表示する",
     "viewSession": "セッションを見る",
     "viewLog": "ログを表示する",
     "copyNodeId": "node id をコピー",
-    "retryFromNode": "このノードから再試行",
+    "retryCurrentNode": "現在のノードを再試行",
     "layoutPending": "ワークフローグラフを配置中",
-    "layoutFailed": "ワークフローグラフを配置できませんでした"
+    "layoutFailed": "ワークフローグラフを配置できませんでした",
+    "rerunFailedNode": "このノードから再実行",
+    "rerunFailedAttempt": "{{attempt}} から再実行"
   },
   "settings": {
     "title": "設定",
@@ -2539,6 +2621,10 @@
     "editorFontSize": "エディタのフォントサイズ",
     "editorFontSizeDescription": "CodeMirror ファイル内のテキストと差分ビューを調整します。",
     "resetFontSize": "デフォルトのフォントサイズに戻す",
+    "interfaceZoom": "インターフェースのズーム",
+    "interfaceZoomDescription": "クライアント全体の表示を等倍で拡大縮小します。Ctrl+ホイールや Ctrl+プラス/マイナスでも調整できます。",
+    "interfaceZoomInvalid": "50～250 の数値を入力してください",
+    "resetZoom": "デフォルトのズームに戻す",
     "localFonts": "カスタムフォントスタック",
     "chooseLocalFont": "フォントの追加または削除",
     "localFontsDescription": "読み込んだローカルフォントは {{count}} 件です。並びの前にあるものほど優先されます。",
@@ -2771,13 +2857,23 @@
       "title": "壁紙",
       "chooseTitle": "デスクトップの壁紙",
       "description": "カスタム壁紙はテーマの壁紙をオーバーライドし、クライアントのサイズに適応します。",
-      "choose": "壁紙を選択",
       "recent": "最近使用した",
       "useRecent": "この最近の壁紙を使う",
+      "deleteRecent": "この壁紙を削除",
       "noRecent": "最近の壁紙はありません",
       "import": "新しい壁紙をインポートする",
-      "restoreTheme": "テーマの壁紙を復元する",
+      "sourceTheme": "テーマ壁紙",
+      "sourceCustom": "カスタム",
+      "sourceDisable": "無効",
+      "themeUnavailable": "現在のテーマに壁紙はありません",
+      "none": "テーマ壁紙を無効にする",
+      "noneActive": "無効",
+      "themeGallery": "テーマの壁紙",
+      "useThemeWallpaper": "このテーマ壁紙を使用",
       "visibility": "壁紙の可視性",
+      "fitLabel": "表示方法",
+      "fitCover": "塗りつぶし",
+      "fitContain": "収めて表示",
       "previewTitle": "壁紙プレビュー",
       "expandPreview": "壁紙のプレビューを展開する",
       "collapsePreview": "壁紙プレビューを折りたたむ",
@@ -2883,43 +2979,6 @@
       "confirmInterrupt": "「今すぐ送信」で返信を中断する前に確認する"
     }
   },
-  "multica": {
-    "taskManagement": {
-      "title": "要件",
-      "source": {
-        "label": "タスクソース",
-        "multica": "Multica"
-      },
-      "workspace": {
-        "label": "ワークスペース",
-        "remove": "ワークスペースを削除する",
-        "removeConfirm": "このワークスペースを削除しますか?その要件は表示されなくなります。"
-      },
-      "column": {
-        "empty": "タスクがありません"
-      },
-      "account": {
-        "connected": "接続済み",
-        "switchAccount": "アカウントを切り替える",
-        "disconnect": "切断する"
-      }
-    },
-    "connection": {
-      "title": "接続アドレス",
-      "addressLabel": "接続アドレス",
-      "save": "保存",
-      "invalidUrl": "有効な http(s) アドレスを入力してください。",
-      "restoreDefault": "デフォルトのアドレスを復元する",
-      "restoring": "復元中…"
-    },
-    "connect": {
-      "title": "Multica に接続",
-      "body": "接続しようとしています:",
-      "confirm": "接続する",
-      "connecting": "接続中…",
-      "cancelConnect": "接続をキャンセルする"
-    }
-  },
   "conversation": {
     "title": "会話",
     "newConversation": "新しい会話",
@@ -2988,6 +3047,13 @@
       "loadingPinned": "固定された会話を読み込んでいます…",
       "retryPinned": "固定された会話を読み込めませんでした。クリックして再試行してください",
       "loadMorePinned": "固定された会話をさらに読み込む",
+      "recent": "最近の会話",
+      "loadingRecent": "最近の会話を読み込み中",
+      "retryRecent": "最近の会話を再試行",
+      "noRecent": "最近の会話はありません",
+      "loadMoreRecent": "最近の会話をさらに表示",
+      "allRecentShown": "最近の会話をすべて表示しました",
+      "allConversationsShown": "会話をすべて表示しました",
       "loadingRuns": "実行履歴を読み込んでいます…",
       "retryRuns": "実行履歴の読み込みに失敗しました。クリックして再試行してください",
       "loadMoreRuns": "実行記録をさらに読み込む",
@@ -3033,7 +3099,8 @@
     "composer": {
       "multicaNeedLocalWorkspace": "要件を実行する前に、ローカルワークスペースを追加してください",
       "multicaBindingTag": "Multica · {{title}}",
-      "removeMulticaBinding": "タスクのバインド解除"
+      "removeMulticaBinding": "タスクのバインド解除",
+      "resizeHandle": "ドラッグして入力欄の高さを調整"
     },
     "branchPicker": {
       "label": "ブランチ",
@@ -3136,7 +3203,12 @@
       "worktree": "worktree",
       "composerRuntimeControlledPlaceholder": "このセッションは runtime によって制御されているため、入力は一時的に利用できません",
       "composerStoppingPlaceholder": "現在のセッションを停止しています…",
-      "composerStoppedPlaceholder": "このセッションは停止されました。任意のメッセージを入力して実行を続行できます"
+      "composerStoppedPlaceholder": "このセッションは停止されました。任意のメッセージを入力して実行を続行できます",
+      "nodeRerunConfirmTitle": "{{node}} / {{attempt}} から再実行しますか？",
+      "nodeRerunConfirmDescription": "元の実行を停止し、最新の Workflow で新しい Run を作成して、このノード以降を再実行します。既存のワークスペースの変更や外部操作は取り消されません。",
+      "sourceSealed": "元の実行は封印されています。履歴は引き続き閲覧できます。",
+      "rerunHistoryHint": "以前のセッションは元の実行に残ります。",
+      "viewRerunSource": "元の実行を表示"
     },
     "gitRequirement": {
       "versionUnsupportedTitle": "Git が古い",
@@ -3215,5 +3287,171 @@
     "validationPositiveNumber": "{{field}} は 0 より大きい必要があります",
     "validationTemplateNameRequired": "テンプレート名は必須です",
     "validationTemplateNameDuplicated": "テンプレート名 {{name}} は既に存在します"
+  },
+  "onboarding": {
+    "loading": "読み込み中",
+    "loadFailed": "起動設定を読み込めません。再試行してください。",
+    "retry": "再試行",
+    "language": "言語",
+    "theme": "テーマを切り替え",
+    "exit": "セットアップを終了",
+    "progress": "設定の進行状況",
+    "checking": "環境を確認中…",
+    "runtimeVersion": "推奨 Node.js {{version}}、検証済み範囲 {{ranges}}",
+    "recheck": "再確認",
+    "installGuide": "公式インストールガイド",
+    "discovering": "ローカル Agent を確認中…",
+    "discovered": "利用可能な Agent を {{count}} 件検出しました",
+    "noAgents": "インストール済みの Agent が見つかりません。いずれかの Agent をインストールしてから再検出してください。",
+    "deferHint": "アプリには先に進めます。Agent の設定は後で設定画面から完了できます。",
+    "defaultAgent": "既定の Agent",
+    "chooseAgent": "利用可能な Agent を選択",
+    "defaultModel": "既定のモデル",
+    "chooseModel": "モデルを選択",
+    "providerDefault": "この Agent はプロバイダーの既定モデルを使用します。",
+    "checkingModel": "モデル設定を読み込み中…",
+    "permission": "権限モード",
+    "choosePermission": "権限モードを選択",
+    "preview": "変更の確認",
+    "previewSummary": "{{count}} 件の組み込みワークフローの {{slots}} 件の実行設定を更新します。",
+    "slots": "{{count}} 件の設定",
+    "loadMore": "さらに読み込む",
+    "back": "戻る",
+    "help": "ヘルプ",
+    "skipGit": "Git を後で設定",
+    "setUpLater": "後で設定",
+    "next": "次へ",
+    "apply": "適用して完了",
+    "review": "変更をプレビュー",
+    "repairHint": "プロバイダーのガイドに従ってインストールまたはログインし、再確認してください。",
+    "settingsTitle": "セットアップとワークフロー",
+    "rerunTitle": "初回セットアップ",
+    "rerunDescription": "Git、実行環境、この PC の Agent を再確認します。",
+    "defaultsTitle": "既定のワークフロー",
+    "defaultsDescription": "組み込みワークフローの Agent、モデル、権限をまとめて設定します。カスタムワークフローは変更しません。",
+    "configureDefaults": "既定値を設定",
+    "rerun": "セットアップを再実行",
+    "npxUnavailable": "npx で起動する Agent は現在利用できません。他の Agent の検出は続行できます。",
+    "allUnavailable": "検出された Agent は現在利用できません。下の理由を確認してください。",
+    "actualNode": "実際に使用している Node.js {{version}}: {{path}}",
+    "unavailable": {
+      "title": "利用できない Agent: {{count}} 件",
+      "runtimeRequired": "npm/npx が必要です",
+      "doctorFailed": "診断に失敗しました: {{reason}}",
+      "nodeVersionHint": "Node.js {{version}} は検証済みの範囲外です。{{recommended}} のインストールをおすすめします。",
+      "runtimeHint": "実行環境に問題があるため、この Agent を起動できない可能性があります。"
+    },
+    "steps": {
+      "git": "Git",
+      "runtime": "実行環境",
+      "agent": "Agent"
+    },
+    "titles": {
+      "git": "Git の準備",
+      "runtime": "実行環境の確認",
+      "agent": "Agent を接続して既定モデルを選択"
+    },
+    "descriptions": {
+      "git": "Git はバージョン管理に使用します。後でインストールすることもできます。",
+      "runtime": "一部の Agent は npx で起動するため、Node.js、npm、npx が必要です。他の Agent には影響しません。",
+      "agent": "利用可能な Agent は自動保存されます。既定モデルを選択し、すべての組み込みワークフローへの適用を確認してください。"
+    },
+    "status": {
+      "ready": "準備完了",
+      "missing": "未インストール",
+      "unsupported": "非対応バージョン",
+      "unverified": "未検証バージョン",
+      "incompatible": "環境の不一致",
+      "failed": "確認失敗",
+      "timeout": "タイムアウト",
+      "cancelled": "キャンセル済み",
+      "skipped": "スキップ済み",
+      "pending": "未確認",
+      "checking": "確認中",
+      "warning": "警告"
+    },
+    "errors": {
+      "setup": {
+        "agent-preparation-required": "プロバイダーのガイドに従ってインストールまたはログインし、再確認してください。",
+        "probe-failed": "確認に失敗しました。再確認してください。",
+        "probe-cancelled": "確認をキャンセルしました。続行するには再確認してください。",
+        "environment-check-required": "先に実行環境の確認を完了してください。",
+        "configuration-conflict": "設定が別の場所で変更されました。Agent を再確認し、最新の変更をプレビューしてください。",
+        "preview-stale": "選択したモデルまたは組み込み Workflow が変更されました。再度プレビューしてください。",
+        "agent-unavailable": "この Agent は使用できなくなりました。再確認するか、別の Agent を選択してください。",
+        "model-config-invalid": "モデルの設定が無効になりました。モデルを選び直してください。",
+        "model-selection-required": "先にモデルを選択してください。",
+        "permission-selection-required": "先に権限モードを選択してください。",
+        "git-decision-required": "対応する Git をインストールするか、Git をスキップしてください。",
+        "recovery-required": "前回の保存を復旧できません。設定フォルダーへのアクセスを復元して再起動してください。",
+        "executable-path-invalid": "既存の実行ファイルをフルパスで選択してください。",
+        "commit-failed": "保存できません。フォルダーの権限と空き容量を確認して再試行してください。",
+        "operation-id-invalid": "保存リクエストが無効です。再度プレビューしてください。",
+        "templates-initialization-required": "組み込み Workflow が初期化されていません。Agent を再確認してください。"
+      }
+    },
+    "gitVersion": "Git {{version}} 以降が必要です。",
+    "previousBindings": "置き換える現在の設定",
+    "previousBinding": "{{slot}}: {{agent}} / {{model}}",
+    "defaultModelLabel": "プロバイダーの既定モデル",
+    "runtimeBlocked": "実行環境の確認に合格しませんでした",
+    "detectionFailed": "Agent の検出に失敗しました。再試行してください。",
+    "recheckRuntime": "実行環境を再確認",
+    "viewRuntime": "実行環境を表示",
+    "environmentHelp": {
+      "missing": "このツールが見つかりません。公式ガイドに従ってインストールし、再確認してください。",
+      "unsupported": "公式ガイドに従って対応バージョンをインストールし、再確認してください。",
+      "unverified": "この安定版は現在の検証済み範囲外ですが、検出されたツールチェーンには互換性があるため続行できます。可能であれば検証済みの LTS 版を使用してください。",
+      "incompatible": "検出した実行環境の組み合わせに互換性がありません。インストール先を確認して再試行してください。",
+      "failed": "確認を完了できませんでした。実行ファイルのパス、アクセス権限、インストール状態を確認して再試行してください。",
+      "timeout": "確認がタイムアウトしました。再試行し、繰り返す場合はツールが正常に起動するか確認してください。",
+      "cancelled": "確認がキャンセルされました。再確認してください。"
+    },
+    "environmentReasons": {
+      "probe-unavailable": "実際に使用された実行環境を確認できませんでした。インストール状態を確認して再試行してください。",
+      "node-mismatch": "別の Node.js が使用されています。想定：{{expectedNodePath}}、実際：{{actualNodePath}}。",
+      "node-version-mismatch": "Node.js のバージョンが一致しません。想定：{{expectedVersion}}、実際：{{actualVersion}}。",
+      "npm-metadata-missing": "npm のインストール情報を確認できません。Node.js/npm のインストールを修復して再確認してください。",
+      "npm-engines-incompatible": "この npm は現在の Node.js に対応していません。必要な条件：{{nodeRange}}。",
+      "npm-version-mismatch": "npm のバージョン情報が一致しません。出力：{{expectedVersion}}、パッケージ：{{actualVersion}}。",
+      "npm-package-mismatch": "npm と npx のインストール先が異なります。npm：{{expectedNpmRoot}}、このツール：{{actualNpmRoot}}。"
+    }
+  },
+  "multica": {
+    "taskManagement": {
+      "title": "要件",
+      "source": {
+        "label": "タスクソース",
+        "multica": "Multica"
+      },
+      "workspace": {
+        "label": "ワークスペース",
+        "remove": "ワークスペースを削除する",
+        "removeConfirm": "このワークスペースを削除しますか?その要件は表示されなくなります。"
+      },
+      "column": {
+        "empty": "タスクがありません"
+      },
+      "account": {
+        "connected": "接続済み",
+        "switchAccount": "アカウントを切り替える",
+        "disconnect": "切断する"
+      }
+    },
+    "connection": {
+      "title": "接続アドレス",
+      "addressLabel": "接続アドレス",
+      "save": "保存",
+      "invalidUrl": "有効な http(s) アドレスを入力してください。",
+      "restoreDefault": "デフォルトのアドレスを復元する",
+      "restoring": "復元中…"
+    },
+    "connect": {
+      "title": "Multica に接続",
+      "body": "接続しようとしています:",
+      "confirm": "接続する",
+      "connecting": "接続中…",
+      "cancelConnect": "接続をキャンセルする"
+    }
   }
 }

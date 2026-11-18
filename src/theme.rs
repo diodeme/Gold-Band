@@ -735,8 +735,11 @@ pub struct ThemePackage {
     pub name: LocalizedThemeName,
     pub author: String,
     pub capabilities: Vec<ThemeCapability>,
-    pub schemes: ThemeSchemes,
-    pub recipes: ComponentRecipes,
+    // Keep the large declarative blocks indirect: serde's temporary values for
+    // nested by-value structs otherwise exhaust the Windows UI thread stack
+    // when a cold catalog is decoded through a native WebView IPC callback.
+    pub schemes: Box<ThemeSchemes>,
+    pub recipes: Box<ComponentRecipes>,
     pub assets: ThemeAssetManifestSummary,
     pub fonts: Option<ThemeFontRuntime>,
     pub icons: Option<ThemeIconMap>,

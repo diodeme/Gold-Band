@@ -633,6 +633,9 @@
       "switchToTreeView": "切换为树形目录",
       "copyAbsolutePath": "复制绝对路径",
       "copyRelativePath": "复制相对路径",
+      "relativeToRunDirectory": "相对于运行目录",
+      "relativeToAttachmentDirectory": "相对于附件目录",
+      "relativeToSourceWorkspace": "相对于来源工作目录",
       "openWorkspaceFile": "打开工作空间文件",
       "referenceToConversation": "引用到对话",
       "removeWorkspaceReference": "移除文件引用",
@@ -773,6 +776,12 @@
     }
   },
   "errors": {
+    "agent.launch-command-missing": "此 Agent 缺少启动命令，请在 Agent 管理中补充命令后重新诊断。",
+    "provider": {
+      "auth-required": "此 Agent 需要完成认证后才能继续。",
+      "auth-required-missing-env": "此 Agent 需要认证。请先配置环境变量：{{env}}。",
+      "auth-required-login": "此 Agent 需要认证。请完成供应商认证后重新检查。"
+    },
     "npx-cache.busy": "已有缓存修复正在进行，请稍后重试。",
     "npx-cache.unavailable": "无法确认可修复的 npx 缓存目录，请重新运行环境诊断。",
     "npx-cache.changed": "诊断、配置或缓存已变化，请关闭弹窗后重试。",
@@ -923,6 +932,7 @@
     },
     "agent": {
       "already-exists": "Agent {{agentType}} 已存在。",
+      "unsupported-platform": "Agent {{agentType}} 不支持当前平台（{{os}}/{{arch}}）。",
       "not-configured": "Agent {{agentType}} 尚未配置。",
       "display-name-required": "请填写 Agent 名称。",
       "command-required": "请填写 Agent 启动命令。"
@@ -946,7 +956,7 @@
       "compaction-summary-query-failed": "无法加载压缩摘要，请重试。",
       "adapter-exited": "Agent 进程在 {{method}} 阶段退出。请检查命令、参数、环境变量、网络和认证状态。",
       "adapter-exited-with-code": "Agent 进程在 {{method}} 阶段退出（退出码 {{exitCode}}）。请检查命令、参数、环境变量、网络和认证状态。",
-      "adapter-start-failed": "无法启动 Agent：{{osError}}",
+      "adapter-start-failed": "无法启动 {{command}}：{{osError}}",
       "doctor-timeout": "Agent 环境诊断在 {{method}} 阶段超时。"
     },
     "app": {
@@ -998,7 +1008,10 @@
         "folder-not-found": "找不到所选文件夹",
         "folder-not-directory": "所选路径不是文件夹",
         "folder-read-failed": "无法完整读取所选文件夹",
-        "no-markdown-files": "所选文件夹中没有 Markdown 文件"
+        "no-markdown-files": "所选文件夹中没有 Markdown 文件",
+        "file-not-found": "找不到所选文件",
+        "file-not-markdown": "所选文件不是 Markdown 文件",
+        "no-files": "未选择任何文件"
       }
     },
     "manual-check": {
@@ -1017,7 +1030,8 @@
       "continue-launch-channel-closed": "工作流恢复未能启动，请重试。"
     },
     "composer": {
-      "context-limit-exceeded": "上下文最多包含 {{max}} 个引用和附件。"
+      "context-limit-exceeded": "上下文最多包含 {{max}} 个引用和附件。",
+      "referenceUnavailable": "引用已失效"
     },
     "conversation": {
       "task-not-found": "找不到该会话。",
@@ -1037,6 +1051,7 @@
       "session-restore-unsupported": "当前 Agent 不支持恢复已有会话。",
       "history-sync-unsupported": "当前 Agent 不支持同步已有会话的完整历史。",
       "prompt-empty": "请输入要发送的内容。",
+      "prompt-too-long": "消息内容不能超过 {{maxChars}} 个字符。",
       "prompt-quote-invalid": "引用数据无效，请删除后重新引用。",
       "prompt-quote-limit-exceeded": "引用内容总长度不能超过 {{maxChars}} 个字符。",
       "prompt-quote-diff-limit-exceeded": "完整 diff 引用总大小不能超过 {{maxBytes}} 字节。",
@@ -1049,6 +1064,7 @@
       "prompt-queue-full": "待发送队列已满，最多可保留 10 条。",
       "prompt-queue-item-not-found": "这条待发送内容已不存在。",
       "prompt-queue-item-dispatching": "这条内容正在发送，暂时无法操作。",
+      "prompt-queue-item-editing": "这条内容正在取回编辑，暂时无法操作。",
       "prompt-queue-empty": "待发送队列为空。",
       "prompt-queue-revision-conflict": "待发送顺序已发生变化，请在列表更新后重试。",
       "prompt-queue-invalid-order": "待发送顺序无效，请重试。",
@@ -1063,7 +1079,8 @@
       "composer-draft-empty": "没有可保存的内容。",
       "composer-draft-full": "草稿箱已满，最多可保留 {{max}} 条。",
       "composer-draft-not-found": "这条草稿已不存在。",
-      "composer-draft-storage-failed": "草稿箱保存失败，请重试。",
+      "composer-draft-invalid": "草稿箱数据无效，请检查本地数据后重试。",
+      "composer-draft-storage-failed": "无法访问草稿箱，请重试。",
       "execution-plan": {
         "not-found": "这次 Run 还没有执行计划。",
         "revision-conflict": "执行计划已变化。请重新加载后再试。",
@@ -1082,6 +1099,24 @@
       }
     },
     "workflow": {
+      "retry": {
+        "run-active": "工作流正在运行，不能重试当前节点。",
+        "run-terminal": "工作流已结束，不能重试当前节点。",
+        "node-not-retryable": "当前节点当前状态不能重试。",
+        "error-blocked": "工作流已被错误阻塞，不能重试当前节点。",
+        "manual-check-pending": "当前节点正在等待人工确认，不能重试。",
+        "unsupported-node": "当前节点类型不支持重试。",
+        "stale-locator": "当前节点已变化，请按最新状态操作。",
+        "workflow-invalid": "工作流配置或运行环境无效，无法重试当前节点。",
+        "invalid-locator": "节点位置无效，请刷新后重试。",
+        "source-sealed": "此运行已封存，不能继续执行或发送消息。",
+        "inherited-attempt": "这是继承的历史节点，请在来源运行中查看会话。",
+        "source-busy": "来源会话仍在停止中，请稍后重试。",
+        "prefix-too-large": "重跑所需历史数据过大，请从更早的任务入口重新运行。",
+        "target-missing": "最新工作流中已没有这个节点。",
+        "workspace-unavailable": "来源工作区已不可用，请先恢复工作区。",
+        "plan-changed": "工作流配置已变化，请刷新后重试。"
+      },
       "agent-doctor-failed": "Agent {{agentType}} 未通过 doctor。",
       "agent-doctor-required": "Agent {{agentType}} 需要先通过 doctor。",
       "permission-mode-unsupported": "Agent {{agentType}} 不支持权限模式 {{permissionMode}}。",
@@ -1235,6 +1270,9 @@
     "customAgentIdPlaceholder": "例如 my-agent",
     "pending": "待支持",
     "configured": "已添加",
+    "integrationOrigin": {
+      "communityAdapter": "社区适配"
+    },
     "empty": "当前还没有已配置的 agent",
     "createTitle": "新增 Agent",
     "createDescription": "创建一个可用于节点执行的 agent 配置。",
@@ -1286,6 +1324,22 @@
     "diagnosing": "诊断中",
     "savedAndDiagnosing": "配置已保存，正在后台诊断。",
     "diagnosticComplete": "环境诊断完成，诊断进程已退出。",
+    "connectionGuide": {
+      "title": "接入条件",
+      "command": "启动命令",
+      "path": "PATH",
+      "pathRequirement": "{{command}} 需要能被 Gold Band 的有效 PATH 解析，或在下方填写显式可执行路径。",
+      "fallback": "兼容方式",
+      "installedCli": "本机 {{command}} CLI 可触发 ACP adapter 的受控准备。",
+      "preparedFallback": "仅使用已准备的 npx 缓存；npx 可用本身不代表 Agent 已安装。",
+      "auth": "认证",
+      "authRequirement": "需完成供应商登录或配置其支持的凭据；环境变量会保存到本机 Agent 配置。",
+      "steps": "检查步骤：解析启动命令 → 启动 ACP adapter → initialize → session/new → 读取能力 → 清理诊断进程。",
+      "result": "最近结果",
+      "checkNow": "立即检查",
+      "saveToCheck": "保存后会自动执行接入检查，结果也会显示在 Agent 卡片。",
+      "formChanged": "当前表单已修改，保存后将按新配置重新检查。"
+    },
     "diagnosticFailed": "环境诊断未通过：{{reason}}",
     "diagnosticFailedNoReason": "环境诊断未通过。",
     "diagnosticFailedFallback": "请检查 agent 命令、网络和认证状态。",
@@ -1302,7 +1356,8 @@
     "status": {
       "unknown": "未检测",
       "healthy": "正常",
-      "unhealthy": "异常"
+      "unhealthy": "异常",
+      "stale": "需重新诊断"
     }
   },
   "contextManagement": {
@@ -1333,7 +1388,6 @@
     "builtInSectionDescription": "固定角色，支持打开草稿并另存为新的自定义角色。",
     "customSectionTitle": "自定义角色",
     "customSectionDescription": "你创建的用户级自定义角色会在这里分页展示。",
-    "customProfilesPageRange": "自定义角色 {{start}}-{{end}} / {{total}}",
     "builtInReadonlyHint": "内置角色不可直接保存，请另存为新角色。",
     "emptyContent": "暂无正文内容",
     "profileRequired": "名称和摘要不能为空。",
@@ -1438,10 +1492,12 @@
       "storageProject": "项目级。保存到 {{path}}"
     },
     "importProfile": "导入角色",
-    "importSettingsDescription": "选择文件夹批量导入角色 Markdown 文件，缺失的名称和摘要会自动兜底。",
+    "importSettingsDescription": "从文件夹批量导入，或直接选择角色 Markdown 文件导入，缺失的名称和摘要会自动兜底。",
     "importDynamicTemplateDescription": "开启后本次导入的所有角色按动态模板处理；正文不合法的会自动降级为静态。",
     "importPickFolder": "选择文件夹并导入",
     "importPickFolderTitle": "选择包含角色 Markdown 文件的文件夹",
+    "importPickFiles": "选择文件并导入",
+    "importPickFilesTitle": "选择角色 Markdown 文件",
     "importResultTitle": "导入结果",
     "importResultSummary": "共扫描 {{total}} 个文件，成功 {{success}} 个，失败 {{failed}} 个。",
     "importResultImported": "已导入",
@@ -1896,7 +1952,6 @@
     "loadFailed": "无法加载本轮文件变化",
     "partial": "部分文件变化无法完整捕获",
     "showMore": "再显示 {{count}} 个文件",
-    "collapse": "收起文件列表",
     "openDiff": "查看 {{path}} 的差异",
     "openVersion": "查看 {{path}} 的本轮版本",
     "deletedFile": "已删除 {{path}}",
@@ -2230,6 +2285,18 @@
     "scrollForHistory": "— 上滑查看历史信息 —",
     "returnToLatest": "回到最新",
     "rawSearchPlaceholder": "检索原始帧内容…",
+    "turnRail": {
+      "older": "更早的轮次",
+      "newer": "更新的轮次",
+      "label": "会话导航",
+      "jump": "跳转到：{{preview}}",
+      "kind": {
+        "prompt": "用户提问",
+        "tool": "工具调用",
+        "compaction": "上下文压缩",
+        "permission": "权限请求"
+      }
+    },
     "rawKindPlaceholder": "事件类型",
     "rawKindAll": "全部事件",
     "rawDirectionAll": "全部方向",
@@ -2341,7 +2408,10 @@
       "interruptConfirmTitle": "立即发送这条内容？",
       "interruptConfirmDescription": "当前回复会被停止，然后发送这条内容。",
       "interruptConfirmSkip": "后续不再提示",
-      "interruptConfirmAction": "停止并发送"
+      "interruptConfirmAction": "停止并发送",
+      "itemStateEditing": "取回编辑中",
+      "itemStateSending": "发送中",
+      "storageError": "待发送队列读取失败"
     },
     "composerDrafts": {
       "title": "草稿箱",
@@ -2352,7 +2422,11 @@
       "take": "取出到输入框",
       "takeOccupied": "请先处理输入框中的当前内容",
       "delete": "删除草稿",
-      "takeConflict": "输入框已有内容，草稿已放回草稿箱。"
+      "deleteConfirmTitle": "删除这条草稿？",
+      "deleteConfirmDescription": "草稿的正文、引用、角色和附件引用会一起删除，此操作无法撤销。",
+      "takeConflict": "输入框已有内容，草稿仍保留在草稿箱。",
+      "takeDeleteKept": "内容已取回输入框，原草稿仍保留在草稿箱。",
+      "saveFull": "草稿箱已满，删除旧草稿后可继续保存"
     },
     "sending": "发送中",
     "sendFailed": "发送失败",
@@ -2482,13 +2556,21 @@
     "zoomIn": "放大",
     "zoomOut": "缩小",
     "fitView": "适应视图",
+    "direction": "布局方向",
+    "directionAuto": "自动",
+    "directionHorizontal": "横向",
+    "directionVertical": "纵向",
+    "fullscreen": "全屏查看",
+    "exitFullscreen": "退出全屏",
     "viewNodeDetail": "查看节点详情",
     "viewSession": "查看会话",
     "viewLog": "查看日志",
     "copyNodeId": "复制 node id",
-    "retryFromNode": "从该节点重试",
+    "retryCurrentNode": "重试当前节点",
     "layoutPending": "正在排布工作流图",
-    "layoutFailed": "工作流图排布失败"
+    "layoutFailed": "工作流图排布失败",
+    "rerunFailedNode": "从此节点重跑",
+    "rerunFailedAttempt": "从 {{attempt}} 重跑"
   },
   "settings": {
     "title": "设置",
@@ -2539,6 +2621,10 @@
     "editorFontSize": "编辑器字号",
     "editorFontSizeDescription": "调整 CodeMirror 文件与差异视图中的字号。",
     "resetFontSize": "恢复默认字号",
+    "interfaceZoom": "界面缩放",
+    "interfaceZoomDescription": "等比缩放整个客户端界面；也可用 Ctrl+滚轮或 Ctrl+加号/减号调整。",
+    "interfaceZoomInvalid": "请输入 50–250 之间的数字",
+    "resetZoom": "恢复默认缩放",
     "localFonts": "自定义字体栈",
     "chooseLocalFont": "添加或取消字体",
     "localFontsDescription": "已载入 {{count}} 个本机字体；越靠前优先级越高。",
@@ -2771,13 +2857,23 @@
       "title": "壁纸",
       "chooseTitle": "桌面壁纸",
       "description": "自定义壁纸会覆盖主题包壁纸，并随客户端尺寸自适应。",
-      "choose": "选择壁纸",
       "recent": "最近使用",
       "useRecent": "使用此最近壁纸",
+      "deleteRecent": "删除此壁纸",
       "noRecent": "暂无最近壁纸",
       "import": "导入新壁纸",
-      "restoreTheme": "恢复主题壁纸",
+      "sourceTheme": "主题壁纸",
+      "sourceCustom": "自定义",
+      "sourceDisable": "禁用",
+      "themeUnavailable": "当前主题未提供壁纸",
+      "none": "禁用主题壁纸",
+      "noneActive": "已禁用",
+      "themeGallery": "主题壁纸",
+      "useThemeWallpaper": "使用此主题壁纸",
       "visibility": "壁纸可见度",
+      "fitLabel": "显示方式",
+      "fitCover": "填充",
+      "fitContain": "适应",
       "previewTitle": "壁纸预览",
       "expandPreview": "放大壁纸预览",
       "collapsePreview": "缩小壁纸预览",
@@ -2883,43 +2979,6 @@
       "confirmInterrupt": "立即发送前确认打断当前回复"
     }
   },
-  "multica": {
-    "taskManagement": {
-      "title": "需求管理",
-      "source": {
-        "label": "任务来源",
-        "multica": "Multica"
-      },
-      "workspace": {
-        "label": "工作空间",
-        "remove": "移除工作空间",
-        "removeConfirm": "确定移除该工作空间？该空间的需求将不再展示。"
-      },
-      "column": {
-        "empty": "暂无任务"
-      },
-      "account": {
-        "connected": "已连接",
-        "switchAccount": "切换账号",
-        "disconnect": "断开连接"
-      }
-    },
-    "connection": {
-      "title": "连接地址设置",
-      "addressLabel": "连接地址",
-      "save": "保存",
-      "invalidUrl": "请输入合法的 http(s) 地址",
-      "restoreDefault": "恢复默认地址",
-      "restoring": "恢复中…"
-    },
-    "connect": {
-      "title": "连接 Multica",
-      "body": "即将连接以下地址：",
-      "confirm": "连接",
-      "connecting": "连接中…",
-      "cancelConnect": "取消连接"
-    }
-  },
   "conversation": {
     "title": "会话",
     "newConversation": "新会话",
@@ -2988,6 +3047,13 @@
       "loadingPinned": "正在加载置顶会话…",
       "retryPinned": "置顶会话加载失败，点击重试",
       "loadMorePinned": "加载更多置顶会话",
+      "recent": "近期会话",
+      "loadingRecent": "正在加载近期会话",
+      "retryRecent": "重试近期会话",
+      "noRecent": "暂无近期会话",
+      "loadMoreRecent": "显示更多近期会话",
+      "allRecentShown": "已显示全部近期会话",
+      "allConversationsShown": "已显示全部会话",
       "loadingRuns": "正在加载运行历史…",
       "retryRuns": "运行历史加载失败，点击重试",
       "loadMoreRuns": "加载更多运行记录",
@@ -3033,7 +3099,8 @@
     "composer": {
       "multicaNeedLocalWorkspace": "请先添加本地工作空间，再执行需求",
       "multicaBindingTag": "Multica · {{title}}",
-      "removeMulticaBinding": "解除任务绑定"
+      "removeMulticaBinding": "解除任务绑定",
+      "resizeHandle": "拖动调整输入框高度"
     },
     "branchPicker": {
       "label": "分支",
@@ -3136,7 +3203,12 @@
       "worktree": "工作树",
       "composerRuntimeControlledPlaceholder": "当前会话由 runtime 运行中，暂不可输入",
       "composerStoppingPlaceholder": "正在停止当前会话…",
-      "composerStoppedPlaceholder": "当前会话已停止，你可以输入任何内容继续运行"
+      "composerStoppedPlaceholder": "当前会话已停止，你可以输入任何内容继续运行",
+      "nodeRerunConfirmTitle": "从 {{node}} / {{attempt}} 重跑？",
+      "nodeRerunConfirmDescription": "将停止来源运行，使用最新工作流创建新的 Run，并从此节点重新执行后续节点。现有工作区更改和外部操作不会撤销。",
+      "sourceSealed": "来源运行已封存，可继续查看历史。",
+      "rerunHistoryHint": "旧会话保留在来源运行中。",
+      "viewRerunSource": "查看来源运行"
     },
     "gitRequirement": {
       "versionUnsupportedTitle": "Git 版本过低",
@@ -3215,5 +3287,171 @@
     "validationPositiveNumber": "{{field}} 必须大于 0",
     "validationTemplateNameRequired": "模板名称不能为空",
     "validationTemplateNameDuplicated": "模板名称 {{name}} 已存在"
+  },
+  "onboarding": {
+    "loading": "正在加载",
+    "loadFailed": "无法读取启动配置，请重试。",
+    "retry": "重试",
+    "language": "语言",
+    "theme": "切换主题",
+    "exit": "退出引导",
+    "progress": "设置进度",
+    "checking": "正在检查环境…",
+    "runtimeVersion": "推荐 Node.js {{version}}；已验证范围 {{ranges}}",
+    "recheck": "重新检测",
+    "installGuide": "官方安装指引",
+    "discovering": "正在检测本地 Agent…",
+    "discovered": "检测到 {{count}} 个可用 Agent",
+    "noAgents": "未检测到已安装的 Agent。安装任一 Agent 后重新检测。",
+    "deferHint": "你可以先进入应用，稍后在设置中完成 Agent 配置。",
+    "defaultAgent": "默认 Agent",
+    "chooseAgent": "选择可用 Agent",
+    "defaultModel": "默认模型",
+    "chooseModel": "选择模型",
+    "providerDefault": "此 Agent 使用供应商默认模型。",
+    "checkingModel": "正在读取模型配置…",
+    "permission": "权限模式",
+    "choosePermission": "选择权限模式",
+    "preview": "应用预览",
+    "previewSummary": "将更新 {{count}} 个内置工作流的 {{slots}} 个执行配置。",
+    "slots": "{{count}} 个执行配置",
+    "loadMore": "加载更多",
+    "back": "上一步",
+    "help": "帮助",
+    "skipGit": "暂时跳过 Git",
+    "setUpLater": "稍后设置",
+    "next": "下一步",
+    "apply": "应用并完成",
+    "review": "预览更改",
+    "repairHint": "请按照供应商指引完成安装或登录，然后重新检测。",
+    "settingsTitle": "引导与工作流",
+    "rerunTitle": "首次启动引导",
+    "rerunDescription": "重新检查 Git、运行环境和本机 Agent。",
+    "defaultsTitle": "默认工作流",
+    "defaultsDescription": "统一设置内置工作流的 Agent、模型和权限，不影响自定义工作流。",
+    "configureDefaults": "配置默认项",
+    "rerun": "重新运行引导",
+    "npxUnavailable": "通过 npx 启动的 Agent 暂时无法使用，其他 Agent 可继续检测。",
+    "allUnavailable": "检测到的 Agent 暂不可用，请查看下方原因。",
+    "actualNode": "实际使用的 Node.js {{version}}：{{path}}",
+    "unavailable": {
+      "title": "{{count}} 个 Agent 暂不可用",
+      "runtimeRequired": "需要 npm/npx",
+      "doctorFailed": "诊断未通过：{{reason}}",
+      "nodeVersionHint": "当前 Node.js {{version}} 不在已验证范围，建议安装 {{recommended}}。",
+      "runtimeHint": "运行环境存在异常，可能导致此 Agent 无法启动。"
+    },
+    "steps": {
+      "git": "Git",
+      "runtime": "运行环境",
+      "agent": "Agent"
+    },
+    "titles": {
+      "git": "准备 Git",
+      "runtime": "检查运行环境",
+      "agent": "连接 Agent，设置默认模型"
+    },
+    "descriptions": {
+      "git": "Git 用于版本管理。你可以稍后安装。",
+      "runtime": "部分 Agent 通过 npx 启动，需要 Node.js、npm 和 npx。其他 Agent 不受影响。",
+      "agent": "可用 Agent 会自动保存。选择默认模型后，预览并应用到全部内置工作流。"
+    },
+    "status": {
+      "ready": "已就绪",
+      "missing": "未安装",
+      "unsupported": "版本不支持",
+      "unverified": "未验证版本",
+      "incompatible": "环境不一致",
+      "failed": "检查失败",
+      "timeout": "检查超时",
+      "cancelled": "已取消",
+      "skipped": "已跳过",
+      "pending": "待检测",
+      "checking": "检测中",
+      "warning": "警告"
+    },
+    "errors": {
+      "setup": {
+        "agent-preparation-required": "请按照供应商指引完成安装或登录，然后重新检测。",
+        "probe-failed": "检测失败，请重新检测。",
+        "probe-cancelled": "检测已取消，请重新检测以继续。",
+        "environment-check-required": "请先完成运行环境检测。",
+        "configuration-conflict": "配置已在其他位置更改，请重新检测 Agent 并预览最新修改。",
+        "preview-stale": "所选模型或内置工作流已更改，请重新预览。",
+        "agent-unavailable": "此 Agent 已不可用，请重新检测或选择其他 Agent。",
+        "model-config-invalid": "模型选项已失效，请重新选择模型。",
+        "model-selection-required": "请先选择模型。",
+        "permission-selection-required": "请先选择权限模式。",
+        "git-decision-required": "请安装受支持的 Git 版本，或明确选择跳过 Git。",
+        "recovery-required": "上次保存未能恢复，请恢复设置目录的访问权限后重启。",
+        "executable-path-invalid": "请选择现有可执行程序的完整路径。",
+        "commit-failed": "无法保存，请检查目录权限和磁盘空间后重试。",
+        "operation-id-invalid": "保存请求无效，请重新预览。",
+        "templates-initialization-required": "内置工作流尚未初始化，请重新检测 Agent。"
+      }
+    },
+    "gitVersion": "需要 Git {{version}} 或更新版本。",
+    "previousBindings": "将替换的当前配置",
+    "previousBinding": "{{slot}}：{{agent}} / {{model}}",
+    "defaultModelLabel": "供应商默认模型",
+    "runtimeBlocked": "运行环境检测未通过",
+    "detectionFailed": "Agent 检测失败，请重试。",
+    "recheckRuntime": "重新检测运行环境",
+    "viewRuntime": "查看运行环境",
+    "environmentHelp": {
+      "missing": "未找到此工具。请按照官方指引安装后重新检测。",
+      "unsupported": "请按照官方指引安装支持的版本后重新检测。",
+      "unverified": "此稳定版本不在当前已验证范围内，但检测到的工具链兼容，可以继续。建议优先使用已验证的 LTS 版本。",
+      "incompatible": "检测到的运行环境组合不兼容，请检查安装位置后重新检测。",
+      "failed": "无法完成检测。请检查程序路径、访问权限和安装状态后重试。",
+      "timeout": "检测超时，请重新检测；持续超时时请检查该工具能否正常启动。",
+      "cancelled": "检测已取消，请重新检测。"
+    },
+    "environmentReasons": {
+      "probe-unavailable": "无法确认实际使用的运行环境，请检查安装状态后重新检测。",
+      "node-mismatch": "使用了不同的 Node.js。预期：{{expectedNodePath}}；实际：{{actualNodePath}}。",
+      "node-version-mismatch": "Node.js 版本不一致。预期：{{expectedVersion}}；实际：{{actualVersion}}。",
+      "npm-metadata-missing": "无法确认 npm 的安装信息，请修复 Node.js/npm 安装后重新检测。",
+      "npm-engines-incompatible": "此 npm 不支持当前 Node.js，要求：{{nodeRange}}。",
+      "npm-version-mismatch": "npm 版本信息不一致。输出：{{expectedVersion}}；安装包：{{actualVersion}}。",
+      "npm-package-mismatch": "npm 与 npx 来自不同安装。npm：{{expectedNpmRoot}}；当前工具：{{actualNpmRoot}}。"
+    }
+  },
+  "multica": {
+    "taskManagement": {
+      "title": "需求管理",
+      "source": {
+        "label": "任务来源",
+        "multica": "Multica"
+      },
+      "workspace": {
+        "label": "工作空间",
+        "remove": "移除工作空间",
+        "removeConfirm": "确定移除该工作空间？该空间的需求将不再展示。"
+      },
+      "column": {
+        "empty": "暂无任务"
+      },
+      "account": {
+        "connected": "已连接",
+        "switchAccount": "切换账号",
+        "disconnect": "断开连接"
+      }
+    },
+    "connection": {
+      "title": "连接地址设置",
+      "addressLabel": "连接地址",
+      "save": "保存",
+      "invalidUrl": "请输入合法的 http(s) 地址",
+      "restoreDefault": "恢复默认地址",
+      "restoring": "恢复中…"
+    },
+    "connect": {
+      "title": "连接 Multica",
+      "body": "即将连接以下地址：",
+      "confirm": "连接",
+      "connecting": "连接中…",
+      "cancelConnect": "取消连接"
+    }
   }
 }

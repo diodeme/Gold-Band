@@ -503,6 +503,17 @@
     @apply h-screen;
   }
 
+  /* The workflow editor mounts as a right-dock resource panel
+     (RightWorkspaceDock → ConversationRunWorkspaceResourcePanel), so the
+     fullscreen overlay lives inside #workspace-right — a z-10 stacking
+     context whose shell siblings (center panel z-10, separators z-20) would
+     paint over it. While an editor is fullscreen the document root is marked
+     and the dock rises above every shell sibling; dialogs portaled to the
+     overlay host (z-50, after #root) still shade it. */
+  :root[data-workspace-editor-fullscreen] #workspace-right {
+    z-index: 40;
+  }
+
   #gold-band-overlay-portal-host {
     overflow: visible;
     contain: none;

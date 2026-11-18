@@ -8,7 +8,7 @@ import { useOverflowTooltip } from '@/hooks/useOverflowTooltip';
 import { cn } from '@/lib/utils';
 import { useMarkdownResourceLinkHandler } from '@/components/prompt-kit/markdown';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
-import type { FileWorkspaceLayoutVm, WorkspaceDirectoryEntryVm, WorkspaceFileLocatorVm } from '@/types';
+import type { FileWorkspaceLayoutVm, WorkspaceDirectoryEntryVm, WorkspaceFileLocatorVm, WorkspaceRootRef } from '@/types';
 import { isExternalUrlHref, isLocalFileHref } from '@/lib/file-link';
 import { composerWorkspaceFileRefFromLocator } from '@/lib/workspace-file-reference';
 import { useWorkspaceFileReferenceCommands, useWorkspaceFileReferencePresentation } from '../workspace-file-reference-bridge';
@@ -35,7 +35,7 @@ import { isMarkdownDocumentPath } from './markdown-document';
 import { markdownHasTableImages } from './markdown-live-preview';
 import { WorkspaceFileTree } from './WorkspaceFileTree';
 import { WorkspaceRootUnavailable } from '../WorkspaceRootUnavailable';
-import { workspaceRootKey, workspaceRootRef } from '@/lib/workspace-root';
+import { workspaceRootKey, workspaceRootRef, type WorkspaceTabRoot } from '@/lib/workspace-root';
 
 interface FileWorkspacePanelProps {
   resource: Extract<RightWorkspaceResource, { kind: 'file' | 'file-browser' }>;
@@ -113,10 +113,23 @@ export function selectedFileAfterEntryMutation(
 export function FileWorkspacePanel({ resource, layout }: FileWorkspacePanelProps) {
   const workspace = useRightWorkspace();
   if (resource.kind === 'file-browser' && resource.root.kind === 'unavailable') {
+    const selectedFile = resource.selectedFile;
+    const source = selectedFile?.source;
+    if (!selectedFile || !source) {
+      return (
+        <WorkspaceRootUnavailable
+          root={resource.root}
+          onBrowseMain={() => void workspace.openResource({ ...resource, browseMain: true })}
+        />
+      );
+    }
     return (
-      <WorkspaceRootUnavailable
-        root={resource.root}
-        onBrowseMain={() => void workspace.openResource({ ...resource, browseMain: true })}
+      <FixedSourceFileWorkspacePanel
+        key={workspaceRootKey(resource.projectId, selectedFile.workspacePath)}
+        resource={resource}
+        selectedFile={selectedFile}
+        unavailableRoot={resource.root}
+        layout={layout}
       />
     );
   }
@@ -125,11 +138,68 @@ export function FileWorkspacePanel({ resource, layout }: FileWorkspacePanelProps
   return <FileWorkspaceRootPanel key={workspaceRootKey(resource.projectId, workspacePath)} resource={resource} workspacePath={workspacePath} layout={layout} />;
 }
 
+function useWorkspaceFileRootWatch(root: WorkspaceRootRef | null) {
+  useEffect(() => {
+    if (!root) return;
+    let stopRequested = false;
+    let started = false;
+    void (async () => {
+      await fileContentStore.startRootWatch(root);
+      if (stopRequested) {
+        await fileContentStore.stopRootWatch(root).catch(() => undefined);
+        return;
+      }
+      started = true;
+    })().catch(() => undefined);
+    return () => {
+      stopRequested = true;
+      if (started) void fileContentStore.stopRootWatch(root).catch(() => undefined);
+    };
+  }, [root]);
+}
+
+function FixedSourceFileWorkspacePanel({ resource, selectedFile, unavailableRoot, layout }: {
+  resource: Extract<FileWorkspacePanelProps['resource'], { kind: 'file-browser' }>;
+  selectedFile: Extract<FileWorkspacePanelProps['resource'], { kind: 'file' }>;
+  unavailableRoot: Extract<WorkspaceTabRoot, { kind: 'unavailable' }>;
+  layout: FileWorkspaceLayoutVm;
+}) {
+  const workspace = useRightWorkspace();
+  const sourceRoot = useMemo(
+    () => workspaceRootRef(selectedFile.projectId, selectedFile.workspacePath),
+    [selectedFile.projectId, selectedFile.workspacePath],
+  );
+
+  useWorkspaceFileRootWatch(sourceRoot);
+
+  return (
+    <FileWorkspaceSplitLayout
+      layout={layout}
+      hasFile
+      revealFileKey={selectedFile.key}
+      content={<FileContent key={selectedFile.key} resource={selectedFile} />}
+      tree={(
+        <WorkspaceRootUnavailable
+          root={unavailableRoot}
+          onBrowseMain={() => void workspace.openResource({ ...resource, browseMain: true })}
+        />
+      )}
+      treeWidth={fileExplorerStore.snapshot(sourceRoot).treeWidth}
+      onTreeWidthChange={(width) => fileExplorerStore.setTreeWidth(sourceRoot, width)}
+    />
+  );
+}
+
 function FileWorkspaceRootPanel({ resource, workspacePath, layout }: FileWorkspacePanelProps & { workspacePath: string | null }) {
   const workspace = useRightWorkspace();
   const selected = resource.kind === 'file' ? resource : (resource.selectedFile ?? null);
   const activationFileKey = useRef(selected?.key ?? null);
   const root = useMemo(() => workspaceRootRef(resource.projectId, workspacePath), [resource.projectId, workspacePath]);
+  const selectedSourceRoot = useMemo(
+    () => selected?.source ? workspaceRootRef(selected.projectId, selected.workspacePath) : null,
+    [selected?.source, selected?.projectId, selected?.workspacePath],
+  );
+  useWorkspaceFileRootWatch(selectedSourceRoot);
 
   useEffect(() => {
     let active = true;
@@ -246,7 +316,7 @@ export function FileContent({ resource }: { resource: FileWorkspaceResource }) {
     && resource.locator.canonicalPath.toLowerCase().endsWith('.svg');
   const referenceCommands = useWorkspaceFileReferenceCommands();
   const referencePresentation = useWorkspaceFileReferencePresentation();
-  const workspaceReference = referenceCommands?.available ? composerWorkspaceFileRefFromLocator(resource.locator) : null;
+  const workspaceReference = referenceCommands?.available ? composerWorkspaceFileRefFromLocator(resource.locator, resource.source) : null;
 
   return (
     <article className="flex h-full min-h-0 flex-col bg-background" aria-label={resource.title}>

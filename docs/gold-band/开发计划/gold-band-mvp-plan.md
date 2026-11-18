@@ -1,5 +1,66 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-11-16 ACP 认证错误与缺失环境变量修复
+
+- 根因：`authenticate` 返回的任何错误都被改写成 `provider.auth-required`，导致超时、取消和 transport 中断丢失原始结构化原因；认证方法选择忽略 ACP `AuthEnvVar.optional`；前端未消费 `methods/missingEnv`，用户看不到需要配置的具体变量。
+- 实现：只为结构化认证失败生成 `provider.auth-required` 并保留原始 raw；取消、Doctor 超时、transport 中断和 adapter 退出原样上抛。必填变量过滤 `optional`。共享连接按修订号实现认证 single-flight：并发实例只执行一次认证，成功后等待者直接重试 `session/new`，认证失败则释放等待者。新增七语言认证摘要，Agent 管理与首次引导按 `missingEnv` 展示环境变量名；会话错误横幅复用同一投影。同步修正验收脚本。
+- 验收：Rust ACP client 全量 193 项通过、6 项按设计忽略；认证定向回归 8 项通过（含共享连接 single-flight）；agent-catalog 45 项通过；前端相关回归 116 项通过，fixture 对齐后 onboarding/auth/DOM 87 项再次通过；`npm run web:build` 与 `cargo fmt --check` 通过。内置浏览器 all-unavailable fixture 可见“诊断未通过：此 Agent 需要认证。请先配置环境变量：QWEN_API_KEY。”。
+- 评审：不新增认证状态机、持久字段或连接身份；只扩展既有结构化错误消费，环境变量列表规模有界，前端投影为常数级映射。
+
+## 2026-11-16 启动保护页误报与 Windows 指引修复
+
+- 根因：`web/src/mockData.ts` 的 Agent 目录在模块顶层调用 `mockCatalogEntry()`，但该函数依赖的 `MOCK_LOCAL_LAUNCHES` 声明在其后。`c176c2cd` 新增连接条件时打破初始化顺序，生产压缩后抛出 `Cannot access 'i$' before initialization`，导致整个 main chunk 失败并被启动保护显示为 WebView 问题。属于正确启动边界下 mock 数据初始化顺序错误，不是能力探测或 WebView 兼容设计缺陷。
+- 实现：将本地启动表与目录构造函数前置，并统一以 `input.defaultCommand ?? 'npx'` 派生 PATH 命令与 npx fallback，避免目录条件在不同入口产生不一致。启动保护页按 Windows / macOS / 其他平台投影能力缺失指引；`webview.app_chunk.load_failed` 使用与平台无关的重装与反馈指引，不再在 Windows 显示 macOS 升级说明。
+- 红绿证据：`web/tests/mock-agent-catalog.test.ts` 与既有 `agent-card-layout.test.tsx` 在修复前均以同一 `MOCK_LOCAL_LAUNCHES before initialization` 失败，修复后通过；新增目录断言覆盖 Claude 的本地 CLI、npx fallback 与 Amp 的原生命令。`webview-bootstrap.test.ts` 新增平台识别、Windows WebView2 指引和 chunk 失败通用指引，修复前 Windows 断言失败，修复后通过。
+- 验收：WebView 6 个文件 / 28 项、Agent 17 个文件 / 64 项通过；Web TypeScript 与 `npm run web:build` 通过。生产构建的 `main` chunk 已确认本地启动表先于目录构造；内置浏览器加载生产产物进入 `/chat`，Agent 管理页正常，控制台无 warning/error，并用 unsupported fixture 确认 Windows 页面显示 WebView2 Runtime 指引且无 macOS 文案。Web 全量回归为 3400 项通过、10 个既有文件共 126 项失败，失败集中在 ACP 重入时序、Marketing 资源超时和既有 DOM 契约，与本次改动文件无关。
+- 性能与过度设计评审：修复只恢复常量初始化顺序，平台判断为一次 UA 正则匹配，不增加持久状态、监听器、缓存、异步链路或依赖；错误页仍是启动路径上的最小 DOM 投影。无需引入新的启动状态机或平台版本矩阵。
+
+
+## 2026-11-13 CodeBuddy 多轮执行配置统一
+
+- 根因：首轮执行通过 `ManagedAgentConfig::executable_adapter()` 把用户选择的 CodeBuddy executable 解析为本机 ACP launch；Direct 后续轮、AI-DYNAMIC 与个人分析直接透传 `ManagedAgentConfig.adapter` 的 npm catalog 配置。同一 workspace 连接签名漂移导致健康 ACP 连接被按 `ConfigChanged` 替换，形成首轮成功、二轮失败。
+- 实现：新增 `App::executable_agent_adapter()` 统一执行入口解析，Direct 两个 `run_prompt` 调用点、AI-DYNAMIC 与个人分析共用该结果；Direct/AI-DYNAMIC 在 durable turn admission 前解析并把同一结果传入执行层，个人分析在 claim lifecycle 前解析，避免配置失败绕过 ACP terminal guard；不改变连接池替换、崩溃恢复和 Agent 配置保存语义。
+- 验收：接口测试固定同一 CodeBuddy 实例配置重复解析结果完全一致，且用户显式 executable 必须解析为 canonical 本机路径与本机 ACP arguments；无效 executable 在 admission 前返回 `setup.executable-path-invalid` 且不创建 lifecycle；正式执行入口源码不再直接消费裸 `adapter` 配置。
+- 过度设计与性能评审：不新增缓存、状态机、错误码或第二连接池；每轮仅复用一次既有路径解析和文件存在性检查，成本为常数级，避免把配置漂移伪装成连接生命周期问题。
+
+
+## 2026-11-09 工作流当前节点重试设计方案
+
+- 状态：已实现并完成定向验收。详细设计及实施证据见[工作流当前节点重试设计方案](生命周期整理/工作流当前节点重试设计方案.md)。
+- 2026-11-09 评审修复：续接引用与 attempt 编号统一使用目标节点的已提交历史；历史会话查询补齐当前 round 上下文；会话树按 canonical trace 读取正式节点与 attempts；retry 与新 Run 复用持续更新当前节点的后台驱动。新增回归与验收证据记入详细方案第 19 节。
+- 2026-11-10 并发与计划一致性修复：固定 Workflow Continue 与 completed recovery 先在既有 attempt lock 内复核状态，再登记 recovery candidate，防止迟到请求破坏已接受 retry 的恢复索引。retry 预检记录当前 execution-plan revision，提交按 plan read lock → attempt lock 复核版本并持锁到 node → round → run 落盘；版本冲突不创建 attempt，重新提交使用新计划。迁移最初 7 项 App 用例及整库补查的 1 项 IM 投影用例的缺失 canonical trace fixture，保持生产严格校验。技术方案、红绿证据与最终验收统一见详细方案第 20 节；不新增持久字段、队列、依赖或第二套生命周期。
+- 2026-11-11 重试命令线程隔离修复：Tauri 入口改为异步，workspace 解析、预检、锁等待和 durable commit 一起复用既有 `spawn_blocking_command`；保留原 expected locator、幂等、错误与 accepted 契约。以可控准备门闩复现调用线程被占用，再验证等待期间命令让出执行权及结构化错误完整返回。实施与验收证据见详细方案第 22 节；不新增状态、队列或依赖。
+- 2026-11-15 评审修复：失败节点重跑改为同一来源串行交接，当前 successor 未 Completed 前拒绝不同历史失败 locator，Completed 后才允许下一次分叉并更新活动 seal；source dispatch 写锁缩短为提交 operation/pending/candidate、暂停与封存，quiesce 与资产复制移至 operation 专属锁；底层状态/IO 错误统一映射 `workflow.retry.workflow-invalid`，Run 切换时清理节点重跑确认框状态。红绿证据、锁边界与性能评审见《工作流失败节点重跑技术方案》第 13 节。
+- 2026-11-16 评审修复：启动恢复路径同样把 source dispatch 写锁收缩到 seal/operation 校验；失败 attempt 重跑统一排除 successor 继承前缀；`GraphNodeVm.retryable` 补齐 successor 封存门禁；节点重跑确认框改用非空 Run scope；`ConversationRunVm` 暴露 `rerunSuccessorRunId`，来源页在 successor 状态变化时自动刷新。P3 性能与 prompt 分类问题本期不处理，详见《工作流失败节点重跑技术方案》第 14 节。
+- 2026-11-13 审查修复：新 round 的入口上下文由首个精确 attempt 扩展为首节点及其连续 retry 链，同 Run 重试和 successor Run 失败节点重跑共用该作用域；普通边回返与后继节点继续隔离。Direct 命令回归 fixture 补齐 durable Run，保留生产可写性检查。设计、接口回归及性能评审见当前节点重试方案第 23 节和[失败节点重跑技术方案](生命周期整理/工作流失败节点重跑技术方案.md)。
+- 根因定性：现有 `run_retry` 已能按 canonical `current_round/current_node/current_attempt` 创建新 attempt，但缺少显式“当前节点可重试”契约、expected locator CAS、并发防护和后台 accepted 语义；会话页运行图的“从该节点重试”仍是硬编码禁用占位。修订后明确 Completed Run 生命周期不可回退，`Completed + Failure` 走 successor run / handoff；本方案只处理 `Paused + RuntimeAbnormal` 且当前 node 为 `Paused + outcome=null` 的未终结 Run。ErrorBlocked 不依赖事件日志猜测错误类别，第一阶段一律拒绝。继续复用 Run/Round/Node/Attempt 状态机、round trace、runtime candidate、既有后台驱动和错误契约，不新增持久字段、队列或平行状态机。
+- 命令设计：以 `retry_current_node(projectId, taskId, runId, expectedRoundId, expectedNodeId, expectedAttemptId)` 替换语义模糊的 `retry_run(taskId, runId)`。后端在旧 attempt 锁内重读权威状态并校验纯生命周期 readiness 与 expected locator，按旧 current locator 截断 canonical trace 后通过原子目录预留创建同 node 新 attempt（将现有 `next_attempt_id` 的读最大值逻辑收敛为 `reserve_next_attempt_dir`），按 node -> round -> run 原子替换提交；只有 run current pointer 指向新 locator 才算 durable accepted。该 pointer 只是当前位置转移与新 trace step 的 commit marker，不是同 locator 状态更新的通用 revision；已完成的更早 round 使用完整已校验 trace。返回 `RetryCurrentNodeAcceptedVm`（Run summary、完整新 locator、稳定 operationId），执行交由后台线程。相同 expected locator 重投时，如果 current 是它在 canonical trace 中的直接 retry successor，则返回同一 `operationId + locator` 和重投时的最新 Run summary，而不创建新 attempt；其他 locator 变化才返回 stale。运行中、终态 Run、ErrorBlocked、已完成节点、人工检查等待和 AI-DYNAMIC 内部节点分别映射稳定错误码；Agent/profile/model/Git 属于提交前 executable preflight，不进入 Graph VM 常数级投影。手动 retry 不改变 `control.max_attempts` 仅统计 failure 修复跳转的既有语义。
+- UI 契约：`GraphNodeVm` 新增后端派生的 `retryable` 投影；当前可重试节点右键显示“重试当前节点”，不可重试节点隐藏入口。回调经运行图资源面板、会话页到 App 的既有命令链路传递，pending 按完整 locator 去重，stale locator 只刷新并提示，不自动重试。七语言同步删除 `graph.retryFromNode` 并新增 `graph.retryCurrentNode`。
+- 验收计划：Rust 覆盖 `Paused + RuntimeAbnormal + node Paused/outcome=null` 重试、Completed + Success/Failure 原地拒绝且状态不回退、ErrorBlocked 与 `recover-completed-attempt` 边界、旧 attempt 保留、canonical trace 截断、原子 attempt 目录预留与崩溃遗留编号空洞、stale locator 拒绝、并发重复请求只成功一次、running/manual check/dynamic 内部节点拒绝、accepted operation identity、spawn 失败与重启恢复只做一次 terminalize、后台失败收敛和 AI-DYNAMIC Git 前置校验；Web 覆盖菜单显隐与点击回调、全屏图透传、pending 去重、stale 刷新、七语言契约和右侧工作区 memo 隔离；随后执行类型检查、生产构建与内置浏览器 deep link 实测。
+- 过度设计与性能评审：不引入第三方组件、新持久字段、新缓存或平行状态机；readiness、accepted DTO 与 canonical trace helper 只显式化既有生命周期和提交边界。第一阶段排除需要新增结构化错误事实才能安全判断的 ErrorBlocked retry。后端 JSON 读取为常数个文件，canonical trace 截断为 `O(t)`，attempt ID 正常通过原子目录预留为 `O(1)`，不扫描全量 attempt 目录；前端仅增加菜单谓词和 memo 比较字段，无全量历史扫描、N+1 或扩大订阅范围；无需新增 benchmark。
+- 实施结果：`retry_current_node` 完整 locator、CAS、canonical trace 截断、幂等 accepted identity、后台驱动与 `GraphNodeVm.retryable` 已落地；旧 `retry_run`、旧 `RunDetailPage` 和 `graph.retryFromNode` 已删除，七语言与运行图回调链路已同步。定向验收共通过 Rust 27 项、Web 35 项，`cargo check`、Web 类型检查和生产构建通过；内置浏览器验证当前节点菜单显隐、480px 窄窗口以及浅色/深色主题，验证后已关闭页面并停止 Vite。
+
+## 2026-10-21 首次启动引导
+
+三步引导、首次／旧安装分流、只读发现与成功后自动登记、真实模型目录、默认工作流批量绑定及两文件恢复已实现；七语言、设置重跑入口与 Direct／AUTO 新配置初值同步接入。候选 Node/npm 策略仍待真实供应商与跨平台安装矩阵，未把元数据检查当作发布验收。实施清单和验证证据统一见[首次启动引导开发计划](新增流程/首次启动引导开发计划.md)。
+
+
+## 2026-11-01 桌面显示与侧栏近期会话（feature_display_shimon）
+
+- 需求 1 界面缩放：根因是桌面端只有字号设置（12–18px），无整窗等比缩放，且 `desktop-page-zoom.ts` 主动拦截了全部原生缩放手势，4K/高分辨率用户无法放大界面。实现采用引擎级缩放：`PersonalizationPreference` 升级 schema 5，新增 `interfaceZoomPercent`（初版 70–200，同日调整为 50–250，见下方调整记录）与 `workflowGraphDirection`；设置 → 外观新增「界面缩放」行（shadcn Slider，拖动即时预览 `apply_desktop_zoom`、`onValueCommit` 走既有 `save_desktop_preferences` 持久化并应用，恢复按钮回到 100%）；应用启动在主窗口 ready 前按已保存值 `WebviewWindow::set_zoom`。`Ctrl+滚轮 / Ctrl+加/减 / Ctrl+0` 由 guard 拦截后转发到 App 安装的 driver：立即应用、600ms 防抖经完整保存链路持久化——缩放唯一事实源始终是持久化偏好，原生浏览器缩放永远被消费；内置浏览器子 WebView 不在范围内。
+- 需求 2.1 布局方向：`WorkflowLayoutSpec` 新增可选 `direction`（RIGHT/DOWN，缺省 RIGHT 保持既有夹具兼容），ELK 端口、success/failure 出口比例（34%/66% 沿交叉轴）、`$new-round` 钉住位置与入边侧全部按方向镜像；React Flow Handle 位置由 `workflowHandlePositions` 派生，fitView 放不下时按方向锚定入口侧（左/上）。偏好默认 `auto`：按画布容器宽高比选择并带 ±0.1 迟滞，方向翻转使编辑器稳定视口失效并重新适配；布局缓存按含方向的 spec 天然区分。GraphControls 提供自动/横向/纵向三选切换，作者态与运行态共享同一偏好与持久化路径。需求 2.3：运行图 maxZoom 1.2→1.4 与作者态统一，并新增全屏查看（GraphControls 全屏按钮 + 全屏 Dialog 承载同一 GraphView，节点打开会话先关闭全屏；作者态编辑器不提供全屏）。需求 2.2（自由位置编排）经评审本期不做：连线渲染契约、DSL 无坐标字段与“保存即丢弃”的价值/成本比不支持，先以方向+缩放+全屏解决根因。
+- 需求 3.1：会话侧栏 Task/Run 分页 24/20 统一降为 10（首批与「显示更多」追加同尺寸）；2026-11-03 调整：置顶区同步统一为 10（原 24 为历史共享常量遗留，非置顶专属设计），全侧栏四个分页接口（工作空间 Task / 置顶 / 近期 / Run）均按 10 项分页。
+- 需求 3.2 近期会话：侧栏新增跨工作空间「近期会话」区（≥2 个工作空间才显示，与置顶区同构的 sticky/折叠；2026-11-03 调整：位置改为工作空间区之下、滚动区末尾，相邻分区之间各恰好一条分隔线），轻量行复用身份槽语义并附工作空间名与相对时间，点击按完整 locator 直达（允许目标工作空间未展开）；首批 10 条 + 按钮式追加 10 条（不做滚动触底自动加载），合并上限 100。后端新增 `get_conversation_recent_task_page`：按 workspace source 枚举 canonical task 目录，以活动时间全局排序合并分页（cursor 含 projectId 以区分跨工作空间同名 task），单工作空间/单条损坏仅结构化 error 隔离；请求在 bootstrap 后并行发起、不进身份关键路径、single-flight+generation 与 Task 页一致。事件投影扩展：`taskActivityAt`/终态/run 状态/权威 task 快照同步更新近期行，活动前进重排到最前，新任务快照插入最前。
+- 2026-11-06 补充（自测双开事故根治，零生产代码改动）：本仓库构建的测试客户端与已安装 MALING 共用 identifier（local.gold-band.desktop）→ 共享 single-instance DBus 锁与 ~/.gold-band 数据目录：会话 DBus 正常时测试版被 MALING 的锁直接弹退（插件 NameTaken→回调→exit(0)），DBus 异常时锁失效、双实例互踩致先启动实例崩溃（2026-11-06 实测事故；MALING 二进制 strings 证实同 identifier+SingleInstanceDBus）。最终方案（曾评估 main.rs 锁名环境变量覆盖，已回滚弃用）=纯脚本层「构建期 identifier 覆盖」：复用仓库自带 `scripts/channel-config.mjs` CLI 生成 default channel overlay，仅改 identifier 为 `local.gold-band.desktop.devtest` 与窗口标题，经 `tauri build --config` 合并——单实例锁天然隔离且仍走真实会话总线（fcitx 完整可用）；配套 `/home/shimonwang/scripts/run-gb-test.sh`（用户脚本目录：build/run/stop/log/status/reset/seed，隔离 HOME=/tmp/gb-home+独立 PID 管理）。另：事故根因之一为 WSL user manager 随会话回收（Linger=no）致 session DBus 变僵尸 socket、fcitx5 dbus 插件拒绝连接而中文输入失效——运维侧修复=`loginctl enable-linger` + `systemctl start user@<uid>`。
+- 2026-11-06 调整（侧栏用户反馈九项修复，设计真源见 conversational-home.md 第 4/5 条与渐进加载契约）：①恢复固定导航区与会话树之间的结构分隔线（IA 改版误删）；②「+」图标 12→14px（不改行高）；③一级组头/二级工作空间行头补悬停底色（组头 accent/60、工作空间行与任务行同款），一级组头对齐固定导航列（px-2/gap-2/chevron 3.5，修「更多」图标错位）；④run 嵌套缩进重排：引导线自 28px 起、run 行负边距拉回全宽使悬停/选中底色与父行一致（修「节点缩进比工作流小 + 悬停不贯穿」）；⑤近期行升级为完整任务行（复用 TaskRow，scope=recent：可展开 run/重命名/置顶，行尾「工作空间名 · 时间」，跨区 scope 独立；类型本就 extends 全字段，run-history 归约器本就同步 recent 投影，纯渲染层改造）；⑥**移除滚动自动加载**（推翻 11-05 哨兵语义）：仅「显示更多」按钮加载，删除 use-load-more-sentinel 钩子与其测试（用户反馈导航树滚动加载失控感）；⑦**折叠即重置**：工作空间行/组/近期组折叠都把分页重置回首屏（not-loaded），再展开重新请求 7 条（新增 reset 纯函数 + App→Shell→WorkspaceShell→Sidebar 可选回调）；⑧⑨确认项：工作空间顺序=最近使用置顶（Rust sort + web prioritize，既有设计）。**排序触发缺口修复（用户实测反馈，同日二次修正语义）**：置顶原只在新建会话/rerun 时触发，「继续旧会话/队列派发」不写 last workspace → 不重排；且语义定稿为「**发起即使用，打开查看不计入**」——继续会话与队列实际派发由 App 级会话事件监听标记（条件：事件属于当前打开的会话页，其它工作空间的后台任务不打扰排序；入队不计、派发后首批事件计入），新建/rerun 保持各自成功路径标记，均为静默式（本地 prioritize + 持久化，无 reveal/草稿切换副作用，已置顶则跳过）。回归：侧栏 14 文件测试全绿、tsc/构建通过。
+- 2026-11-05 调整（侧栏 IA 与分页，设计真源见 conversational-home.md 第 4/5/6/7 条）：全侧栏分页 10→7（前端常量、后端默认 limit、浏览器 mock 三处同步）；侧栏重构为单棵滚动树——置顶 →「工作空间」组（默认折叠，偏好 `workspaces.collapsed`，组头 hover「+」=添加工作空间）→「近期会话」组，组间取消结构分隔线，近期区取消固定高度尾区；二级工作空间行头缩进 20px 并降为 500 字重、三级任务行 28px；哨兵自动加载改为「仅用户滚动其所属滚动容器（侧栏滚动树）后武装 + 可见性守卫」（修正 IntersectionObserver 初显即触发导致的展开自动翻页；无关面板滚动不参与武装，无滚动条时依赖按钮）；reveal 自动展开组但不写偏好，且偏好回显不再压掉 reveal 临时展开（仅外部变更值生效）。
+- 红绿证据：先在分支全量跑出 29 项回归（旧夹具缺新字段、侧栏排版 token 契约、编辑器源码契约），逐项修复后分支全量与 main 基线在同环境完全一致（103 项环境固有失败、零新增），并新增 24 项测试全绿：Rust `legacy_personalization_schema_v4_upgrades_with_display_defaults`、`personalization_display_preferences_clamp_and_serialize`、`recent_task_page_merges_workspaces_with_global_cursor_and_isolated_errors`；前端 `desktop-page-zoom`（driver 派发）、`desktop-interface-zoom`（钳制+源码契约）、`workflow-graph-direction`（迟滞/端口镜像/入口锚定）、`conversation-sidebar-recent`（分页/合并/投影/bootstrap 重置）、`graph-controls`（方向/全屏按钮）。`cargo check -p gold-band --tests`、`cargo fmt`（仅余 main 既有的 profiles.rs 差异）、`tsc -p web/tsconfig.build.json`、`npm run web:test`、`npm run web:build` 通过；src-tauri 因本环境无 GTK 系统库未编译，`get_conversation_recent_task_page`/缩放命令以人工核验 + 源码契约测试覆盖，待 Linux 构建验收。
+- 过度设计与性能评审：不新增依赖、缓存、队列或状态机；方向是既有布局 spec 的一个维度（ELK 仍在 Worker、LRU 32），方向翻转才触发一次重排；缩放为 O(1) 原生调用，快捷键防抖持久化；近期页为 K（工作空间数）× 有界枚举，远轻于既有启动恢复扫描，不进首屏关键路径；近期行投影复用既有事件管道，O(1) 命中。侧栏近期区对缺字段 VM 按空列表容错，仅防御测试夹具与旧形状输入，不改变生产 canonical 形状。
+- 同日用户调整：缩放范围放宽为 50–250 并增加手动数字输入（非法输入提示且不生效，越界就近钳制并同步滑杆，手动值不做步进吸附；快照见 settings.md）；近期会话区取消 ≥2 工作空间门控、任何数量默认显示；近期区与工作空间区补充尾部哨兵自动加载（IntersectionObserver，短页继续加载、失败中止自动链、按钮兜底、耗尽即隐藏）；补近期行导航 locator 与耗尽态隐藏按钮的 DOM 回归。此前“共享滚动容器不能自动加载”的结论被用户质疑后修正：正确实现是区尾哨兵而非容器滚底事件。
+- 二轮调整（同日）：① 缩放完整性审计修复真实缺陷——内置浏览器页与地址建议列表的子 WebView 此前按 Tauri 逻辑单位（仅系统缩放）定位，界面缩放 ≠100% 时必错位；改为前端按 `devicePixelRatio`（系统缩放×界面缩放）换算物理像素发送、后端 `PhysicalPosition/PhysicalSize` 消费（browser.rs 三处 + host 两处 + 建议浮层；jsdom dpr=1 故既有测试值不变，新增源码契约测试）。Win10 边框投影本就按 DPR,自洽；CSS 布局在引擎缩放下全量等比,测量类容器随视口 resize 重算;高缩放下进入既有的窄窗响应式形态属预期而非错乱。② 列表耗尽提示：分页过的列表（已合并行数 ≥ 一页）在尾部显示低对比「已显示全部」，短列表静默结束；新增 DOM 回归。③ 哨兵机制澄清写入文档：判断对象从“滚动容器底部”改为“各板块自己的尾部哨兵元素是否进入可视区”，各板块仍共用同一条滚动栏。
+- 同日 code review 修复（10 项全处理）：删除会话同步移出近期投影；编辑器方向翻转的 one-shot fit 等待匹配方向的布局，不再消费翻转前的旧边界；ready 且为空的近期页允许插入首条会话；缩放快捷键防抖在设置页提交新值时取消，旧步进不再覆盖新保存值；后端分页默认 limit 24→10 与文档对齐（浏览器 mock 同步）；运行图锁定纵向偏好时惰性初始化方向，省去首次多余横向布局；近期刷新语义与工作空间页一致（保留已加载行，测试改按真实契约断言）；types 注释与死 JSX 包装清理；App 加载处理器返回 Promise 供哨兵等待。新增回归：近期删除/首条插入/防抖取消 hook 测试。
+
+
 ## 2026-10-26 Direct 未物化失败投影第一阶段
 
 - 提示修正：`acp.session-restore-reference-missing` 的本地化 key 原本错误放在 `errors.conversation.*`，导致失败横幅只显示英文 diagnostic。七语言文案已迁移到 `errors.acp.*`；简体中文明确解释 Provider 会话引用缺失、原会话无法恢复，并引导新建会话后重新发送。横幅标题与原因改为上下分层并使用 alert 语义。错误映射与 DOM 最小用例先红后绿，相关 5 个测试文件 265 项、Web 生产构建、diff 校验通过；内置 iab 在 787px 视口确认无横向溢出。browser fixture 没有精确错误码，精确文案由 DOM 用例验收。不新增错误码、状态或请求，性能影响为常数级。
@@ -1605,7 +1666,8 @@ enum ControlDecision {
 例如：
 - `start_run()`
 - `continue_run()`
-- `retry_run()`
+- `retry_current_node()`（仅未终结 Run 的当前失败节点，完整 locator CAS）
+- `rerun_failed_node()`（已完成失败 Attempt 创建 successor Run）
 - `pause_run()`
 - `open_session()`
 
@@ -1627,6 +1689,13 @@ MVP 主流程：
 桌面端 `start_run` command 需要在第 4 步完成后立即返回初始 run summary，并把第 5 步交给后台线程执行，避免 UI 等待完整 workflow 跑完后才恢复响应。若最新 Run 尚未进入终止态，桌面端不允许继续新建 Run。
 
 run 创建编号规则统一由 runtime 负责：普通启动和会话页重跑都扫描当前 task 的 `runs/` 目录最大 `run-NNN` 后递增，并先原子创建目标 run 目录占位，再写入 `run.json`、`workflow.snapshot.json`、`round.json` 和首个 `node.json`。前端不得根据当前选中的 run 推导新 run id；并发重跑时目录占位失败的一方必须重新扫描最大编号再分配。
+
+### 2026-11-12：Workflow 失败节点重跑
+
+- 普通 Worker 的 `Completed + Failure/Invalid` attempt 支持从精确 locator 重跑；已完成 Run 不原地复活，而是创建 successor Run，继承锚点以前的 canonical trace、node 状态、产物和附件，并追加 fresh attempt，依次执行该节点及最新 Workflow 的后续节点。历史失败 attempt 与当前已完成失败节点共用该接口；`ErrorBlocked` 暂不支持。
+- successor 记录 source Run UUID、round/node/attempt、operation ID、继承水位和 authoring revision；source 首次交接后封存，保持原结果并拒绝 continue、ACP 追问、执行计划当前写入和继承 attempt 写入。相同 source UUID + locator 幂等返回同一 successor；操作记录和 runtime recovery candidate 支持提交中断后的物化恢复，恢复阶段不调用 provider。
+- 复用现有 execution-plan 锁、attempt execution fencing、后台 driver、原子 JSON 和实际 workspace/worktree。拒绝未提交 trace、目标删除、工作区丢失、资源超限和符号链接；前缀最多 4096 steps、4096 个资源项、256 MiB，round 元数据读取也有界，复制阶段基于来源 Run capability 和 no-follow 打开复核，防止预检后的路径替换逃逸。重跑不回滚 Git 或外部副作用，不复制旧 ACP session、worker-ref、聊天和 Raw 日志。
+- 会话运行图为最新失败节点和历史失败 attempt 提供重跑入口，确认后导航到 successor；来源 Run 只读，继承 attempt 只读，ErrorBlocked 不显示入口。接口回归覆盖终态/历史重跑、最新工作流后继执行、并发幂等、source seal、迟到写入、恢复中断、资源边界、历史动态图 child 收敛和 ErrorBlocked。
 
 ### `run kill`
 MVP 行为：

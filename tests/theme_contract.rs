@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use gold_band::theme::{ThemeMaterialModel, builtin_theme, builtin_theme_catalog};
+use gold_band::theme::{ThemeCapability, ThemeMaterialModel, builtin_theme, builtin_theme_catalog};
 
 #[test]
 fn rust_catalog_deserializes_every_generated_declarative_theme() {
@@ -10,10 +10,15 @@ fn rust_catalog_deserializes_every_generated_declarative_theme() {
         .map(|theme| theme.id.as_str())
         .collect::<BTreeSet<_>>();
 
-    assert_eq!(catalog.len(), 2);
+    assert_eq!(catalog.len(), 4);
     assert_eq!(
         ids,
-        BTreeSet::from(["builtin.gold-band", "builtin.tech-neutral"])
+        BTreeSet::from([
+            "builtin.gold-band",
+            "builtin.vista",
+            "builtin.tech-neutral",
+            "builtin.meadow"
+        ])
     );
     for theme in catalog {
         assert!(!theme.name.zh_cn.is_empty());
@@ -37,16 +42,23 @@ fn rust_catalog_deserializes_every_generated_declarative_theme() {
                 );
             }
         }
-        let ui_stack = theme
-            .fonts
-            .as_ref()
-            .and_then(|fonts| fonts.stacks.iter().find(|stack| stack.id == "theme-ui"))
-            .expect("every built-in theme should declare its UI font stack");
-        assert_eq!(
-            ui_stack.default_faces,
-            ["inter-variable", "misans-variable"],
-            "theme font order must not depend on interface language"
-        );
+        if let Some(fonts) = theme.fonts.as_ref() {
+            let ui_stack = fonts
+                .stacks
+                .iter()
+                .find(|stack| stack.id == "theme-ui")
+                .expect("font-capable built-in themes should declare their UI font stack");
+            assert_eq!(
+                ui_stack.default_faces,
+                ["inter-variable", "misans-variable"],
+                "theme font order must not depend on interface language"
+            );
+        } else {
+            assert!(
+                !theme.capabilities.contains(&ThemeCapability::Fonts),
+                "themes without font assets must not claim the fonts capability"
+            );
+        }
     }
 }
 
@@ -58,9 +70,29 @@ fn rust_catalog_contains_only_the_supported_builtin_packages() {
     let tech_neutral = builtin_theme("builtin.tech-neutral")
         .expect("catalog should deserialize")
         .expect("technology-neutral theme should be registered");
+    let vista = builtin_theme("builtin.vista")
+        .expect("catalog should deserialize")
+        .expect("vista theme should be registered");
 
     assert!(gold_band.visual_quality_profiles.is_none());
     assert!(tech_neutral.visual_quality_profiles.is_none());
+    assert!(vista.visual_quality_profiles.is_some());
+    assert!(vista.fonts.is_none());
+    assert!(vista.wallpapers.is_some());
+    assert!(
+        vista
+            .visual_quality_profiles
+            .as_ref()
+            .is_some_and(|profiles| !profiles
+                .performance
+                .wallpapers
+                .as_ref()
+                .is_some_and(|wallpapers| wallpapers.enabled))
+    );
+    assert_eq!(
+        vista.schemes.light.material.model,
+        ThemeMaterialModel::Solid
+    );
     assert_eq!(
         gold_band.schemes.light.material.model,
         ThemeMaterialModel::Solid

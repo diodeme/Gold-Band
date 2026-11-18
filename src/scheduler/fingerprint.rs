@@ -1,5 +1,5 @@
 use super::ScheduledMode;
-use crate::provider::{PromptWorkspaceFileRef, UserPromptQuote, workspace_file_authoring_identity};
+use crate::provider::{PromptWorkspaceFileRef, UserPromptQuote};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -162,21 +162,14 @@ pub fn canonical_content_json(input: &ScheduledTaskContentInput) -> Value {
     let mut workspace_files = input
         .workspace_files
         .iter()
-        .map(|reference| {
-            let (project_id, relative_path) =
-                workspace_file_authoring_identity(&reference.project_id, &reference.relative_path);
-            (project_id, relative_path)
-        })
+        .map(|reference| reference.authoring_identity())
         .collect::<Vec<_>>();
     workspace_files.sort();
     workspace_files.dedup();
     let workspace_files = workspace_files
         .into_iter()
-        .map(|(project_id, relative_path)| {
-            serde_json::json!({
-                "projectId": project_id,
-                "relativePath": relative_path,
-            })
+        .map(|identity| {
+            serde_json::from_str::<Value>(&identity).expect("serialized file reference")
         })
         .collect::<Vec<_>>();
     root.insert("workspaceFiles".to_string(), Value::Array(workspace_files));
@@ -724,7 +717,7 @@ mod tests {
         let mut changed_workspace = baseline.clone();
         changed_workspace.workspace_id = "workspace-b".to_string();
         let mut changed_workspace_file = baseline.clone();
-        changed_workspace_file.workspace_files = vec![PromptWorkspaceFileRef {
+        changed_workspace_file.workspace_files = vec![PromptWorkspaceFileRef::Workspace {
             project_id: "workspace-b".to_string(),
             relative_path: "src/main.rs".to_string(),
         }];
@@ -746,15 +739,15 @@ mod tests {
     fn workspace_file_order_separators_and_duplicates_are_normalized() {
         let mut first = direct_input("claude-acp");
         first.workspace_files = vec![
-            PromptWorkspaceFileRef {
+            PromptWorkspaceFileRef::Workspace {
                 project_id: "workspace-a".to_string(),
                 relative_path: "src\\WorkspaceFileTree.tsx".to_string(),
             },
-            PromptWorkspaceFileRef {
+            PromptWorkspaceFileRef::Workspace {
                 project_id: "workspace-a".to_string(),
                 relative_path: "docs/design.md".to_string(),
             },
-            PromptWorkspaceFileRef {
+            PromptWorkspaceFileRef::Workspace {
                 project_id: "workspace-a".to_string(),
                 relative_path: "src/WorkspaceFileTree.tsx".to_string(),
             },
@@ -776,21 +769,43 @@ mod tests {
     }
 
     #[test]
+    fn fixed_file_source_location_changes_fingerprint_but_order_does_not() {
+        let source: PromptWorkspaceFileRef = serde_json::from_value(serde_json::json!({"kind":"artifact", "name":"review.json",
+            "locator":{"projectId":"p", "taskId":"t", "runId":"r", "roundId":"round", "nodeId":"n", "attemptId":"a", "branchId":"root"}
+        })).unwrap();
+        let mut first = direct_input("claude-acp");
+        first.workspace_files = vec![source.clone(), source.clone()];
+        let mut same = first.clone();
+        same.workspace_files = vec![source.clone()];
+        assert_eq!(
+            content_fingerprint(&first).unwrap(),
+            content_fingerprint(&same).unwrap()
+        );
+        if let PromptWorkspaceFileRef::Artifact { locator, .. } = &mut same.workspace_files[0] {
+            locator.run_id = "other-run".into();
+        }
+        assert_ne!(
+            content_fingerprint(&first).unwrap(),
+            content_fingerprint(&same).unwrap()
+        );
+    }
+
+    #[test]
     #[cfg(windows)]
     fn windows_workspace_file_case_variants_share_identity() {
         let mut first = direct_input("claude-acp");
         first.workspace_files = vec![
-            PromptWorkspaceFileRef {
+            PromptWorkspaceFileRef::Workspace {
                 project_id: "Workspace-A".to_string(),
                 relative_path: "src\\WorkspaceFileTree.tsx".to_string(),
             },
-            PromptWorkspaceFileRef {
+            PromptWorkspaceFileRef::Workspace {
                 project_id: "workspace-a".to_string(),
                 relative_path: "SRC/workspacefiletree.TSX".to_string(),
             },
         ];
         let mut second = direct_input("claude-acp");
-        second.workspace_files = vec![PromptWorkspaceFileRef {
+        second.workspace_files = vec![PromptWorkspaceFileRef::Workspace {
             project_id: "workspace-a".to_string(),
             relative_path: "src/workspacefiletree.tsx".to_string(),
         }];

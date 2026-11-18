@@ -1,6 +1,6 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import { App } from './App';
+import { OnboardingGate } from './onboarding/OnboardingGate';
 import { AppProviders } from '@/components/AppProviders';
 import './i18n';
 import { installUiErrorDiagnostics, shouldLogUiError } from '@/lib/ui-error-diagnostics';
@@ -28,6 +28,6 @@ createRoot(document.getElementById('root') as HTMLElement, {
   },
 }).render(
   <React.StrictMode>
-    <AppProviders><App /></AppProviders>
+    <AppProviders><OnboardingGate /></AppProviders>
   </React.StrictMode>,
 );

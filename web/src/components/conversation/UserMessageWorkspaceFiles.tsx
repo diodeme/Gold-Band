@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
 import type { WorkspaceFileTimelineRef } from '@/lib/composer-context';
+import { fileReferenceIdentity } from '@/lib/file-reference-source';
 
 export function UserMessageWorkspaceFiles({
   files,
@@ -20,7 +21,7 @@ export function UserMessageWorkspaceFiles({
     >
       {files.map((file) => (
         <Button
-          key={`${file.projectId}:${file.canonicalPath ?? file.relativePath}`}
+          key={fileReferenceIdentity(file.source)}
           type="button"
           variant="ghost"
           size="sm"

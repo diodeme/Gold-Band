@@ -5,7 +5,9 @@ use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::time::{Duration, Instant};
 
 mod item_reader;
-pub use item_reader::{ActivityImagePage, read_activity_image_page};
+pub use item_reader::{
+    ActivityImagePage, TURN_INDEX_PAGE_SIZE, read_activity_image_page, read_conversation_turn_page,
+};
 
 use anyhow::{Result, ensure};
 use camino::{Utf8Path, Utf8PathBuf};

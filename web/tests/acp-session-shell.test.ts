@@ -516,23 +516,23 @@ describe('missingAcpSessionRetryDelay', () => {
 });
 
 describe('shouldKeepAcpInitialSessionLoadingAfterRetryExhausted', () => {
-  it('keeps an active runtime attempt initializing when retries end without an actual load error', () => {
+  it('keeps Runtime or ACP initialization pending when retries end without a load error', () => {
     expect(shouldKeepAcpInitialSessionLoadingAfterRetryExhausted({
-      runtimeActive: true,
+      initializationActive: true,
       hasLoadError: false,
     })).toBe(true);
   });
 
-  it('still reports an actual load error for an active runtime attempt', () => {
+  it('still reports an actual load error during active initialization', () => {
     expect(shouldKeepAcpInitialSessionLoadingAfterRetryExhausted({
-      runtimeActive: true,
+      initializationActive: true,
       hasLoadError: true,
     })).toBe(false);
   });
 
-  it('reports missing session content once an inactive attempt stops retrying', () => {
+  it('reports missing session content once initialization is inactive and retries end', () => {
     expect(shouldKeepAcpInitialSessionLoadingAfterRetryExhausted({
-      runtimeActive: false,
+      initializationActive: false,
       hasLoadError: false,
     })).toBe(false);
   });

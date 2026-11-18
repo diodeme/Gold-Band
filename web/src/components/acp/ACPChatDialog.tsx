@@ -162,14 +162,16 @@ import {
   type AttachmentItem,
 } from "@/lib/attachment-service";
 import {
+  acpComposerDraftRolePrefix,
+  acpComposerDraftToPromptSubmission,
   queuedPromptToAcpComposerDraft,
   useAcpComposerDraft,
   type AcpComposerDraft,
 } from "@/lib/acp-composer-draft";
+import { fileReferenceIdentity } from "@/lib/file-reference-source";
 import {
   addComposerQuote,
   addComposerWorkspaceFile,
-  createComposerPromptSubmission,
   userPromptQuotesFromRaw,
   userPromptRoleFromRaw,
   hasUserPromptPayload,
@@ -277,10 +279,12 @@ import {
   continueConversationRuntime,
   recoverConversationRuntime,
   reorderConversationQueuedPrompts,
-  restoreConversationQueuedPrompt,
+  getConversationQueuedPrompt,
+  releaseConversationQueuedPromptEdit,
   resumeConversationPromptQueue,
   setConversationPromptQueueMode,
   statAttachmentFiles,
+  resolveRightWorkspaceFileTarget,
   submitConversationPrompt,
   useConversationQueuedPrompt,
   setAcpSessionModel,
@@ -329,6 +333,7 @@ import {
 import i18n, { displayAppError, displayStatus } from "@/i18n";
 import { acpRuntimeErrorBannerCopy } from '@/lib/acp-runtime-error';
 import { currentAcpExecutionError } from '@/lib/acp-execution-error';
+import { ConversationTurnRail } from './ConversationTurnRail';
 import { UNRESOLVED_WORK_LOCATION, workspaceRootRef, worktreeBranchOfLocation, worktreePathOfLocation } from '@/lib/workspace-root';
 import type {
   AcpElicitationRequestVm,
@@ -1470,6 +1475,11 @@ export function ACPChatDialog(
   }: ACPChatDialogProps,
 ) {
   const { t } = useTranslation();
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
   const rightWorkspace = useOptionalRightWorkspaceCommands();
   const workspaceFileReferenceBridge = useWorkspaceFileReferenceBridge();
   const effectiveEventPageSize = normalizeEventPageSize(eventPageSize);
@@ -1772,6 +1782,22 @@ export function ACPChatDialog(
   const [queueMutationPending, setQueueMutationPending] = useState(false);
   const [queueRestorePending, setQueueRestorePending] = useState(false);
   const [queueSendingItemId, setQueueSendingItemId] = useState<string | null>(null);
+  const composerDraftStoragePendingRef = useRef(false);
+  const composerMutationInFlightRef = useRef(false);
+  const [composerDraftStoragePending, setComposerDraftStoragePending] = useState(false);
+  const acquireComposerMutation = useCallback(() => {
+    if (composerMutationInFlightRef.current) return false;
+    composerMutationInFlightRef.current = true;
+    return true;
+  }, []);
+  const releaseComposerMutation = useCallback(() => {
+    composerMutationInFlightRef.current = false;
+  }, []);
+  const changeComposerDraftStoragePending = useCallback((pending: boolean) => {
+    composerDraftStoragePendingRef.current = pending;
+    setComposerDraftStoragePending(pending);
+    if (!pending) releaseComposerMutation();
+  }, [releaseComposerMutation]);
   const latestSessionRef = useRef<AcpSessionVm | null>(restoredSession);
   const canonicalTimelineCoverageRef = useRef<{
     eventWindowKey: string;
@@ -2512,8 +2538,6 @@ export function ACPChatDialog(
     : restoredSession;
   const projectionLifecycle = localRuntimeLifecycle ?? runtimeComposerContext?.lifecycle;
   const runtimeActiveFromContext = !runtimeStopAccepted && (runtimeComposerContext?.lifecycle?.runtime.active ?? isRuntimeActiveStatus(runtimeComposerContext?.runtimeStatus));
-  const runtimeActiveFromContextRef = useRef(runtimeActiveFromContext);
-  runtimeActiveFromContextRef.current = runtimeActiveFromContext;
   const cancelledDirectAttemptShell = shouldCreateCancelledDirectAttemptShell({
     isOrchestrated: runtimeComposerContext?.isOrchestrated ?? true,
     lifecycle: projectionLifecycle,
@@ -2528,6 +2552,9 @@ export function ACPChatDialog(
       || projectionLifecycle?.composer.mode === 'stopping'
     ),
   );
+  // Direct startup belongs to ACP and does not activate the Workflow Runtime.
+  const initializationActiveRef = useRef(initializationLifecycleActive || runtimeActiveFromContext);
+  initializationActiveRef.current = initializationLifecycleActive || runtimeActiveFromContext;
   const liveSessionShell = useMemo(
     () =>
       shouldCreateLiveAcpSessionShell({
@@ -2651,7 +2678,7 @@ export function ACPChatDialog(
       },
     },
   });
-  const committedSlashCommand = useMemo(
+  const parsedCommittedSlashCommand = useMemo(
     () => parseCommittedSlashItem(
       prompt,
       slashCommands.catalogItems,
@@ -2659,6 +2686,21 @@ export function ACPChatDialog(
     ),
     [prompt, slashCommands.catalogItems, slashCommands.selectedIdentity],
   );
+  const committedSlashCommand = useMemo(() => {
+    const role = composerDraft.draft.role;
+    if (!role) return parsedCommittedSlashCommand;
+    return {
+      item: {
+        kind: 'role' as const,
+        id: role.profileId,
+        name: role.name,
+        description: role.name,
+        content: role.content,
+      },
+      prefix: acpComposerDraftRolePrefix(role),
+      suffix: prompt.slice(acpComposerDraftRolePrefix(role).length),
+    };
+  }, [composerDraft.draft.role, parsedCommittedSlashCommand, prompt]);
   const providerCatalog = useMemo(
     () => acpProviderConfigCatalog(agentRegistry, effective?.provider),
     [agentRegistry, effective?.provider],
@@ -2774,6 +2816,11 @@ export function ACPChatDialog(
   );
   const todoEntries = timelineProjection.todoEntries;
   const timeline = useStableAcpTimeline(timelineProjection.timeline);
+  // Mirror of the stable timeline for callbacks that must observe items
+  // mounted AFTER the callback was created (e.g. the turn-rail jump poll
+  // waiting for older-page pagination to load the target item).
+  const timelineRef = useRef(timeline);
+  timelineRef.current = timeline;
   const effectiveTimelineGeneration = acpSessionTimelineGeneration(effective);
   const executionExited = Boolean(currentAcpExecutionError(projectionLifecycle));
   const timelineWindowOwner = useMemo<AcpTimelineWindowOwner>(() => ({
@@ -2968,6 +3015,7 @@ export function ACPChatDialog(
   const canSubmitPrompt = composerState.canSubmit
     && !queueSubmitPending
     && !queueRestorePending
+    && !composerDraftStoragePending
     && hasUserPromptPayload(
       slashSendableText(prompt, committedSlashCommand),
       pendingAttachments.length,
@@ -2976,7 +3024,8 @@ export function ACPChatDialog(
     );
   const canSubmitHistory = composerState.canSubmitContent
     && !queueSubmitPending
-    && !queueRestorePending;
+    && !queueRestorePending
+    && !composerDraftStoragePending;
   const promptQueue = localRuntimeLifecycle?.promptQueue
     ?? runtimeComposerContext?.lifecycle?.promptQueue
     ?? null;
@@ -4608,7 +4657,7 @@ export function ACPChatDialog(
           }
           if (
             shouldKeepAcpInitialSessionLoadingAfterRetryExhausted({
-              runtimeActive: runtimeActiveFromContextRef.current,
+              initializationActive: initializationActiveRef.current,
               hasLoadError: lastLoadError != null,
             })
           ) {
@@ -5870,6 +5919,47 @@ export function ACPChatDialog(
   };
   canonicalHeadHandoffRef.current = returnToLatestEvents;
 
+  // Turn rail jump: anchor to the first loaded item at or after the target
+  // turn's seq. When the target predates the loaded window, scrolling to the
+  // top drives the existing older-page pagination; a bounded poll anchors as
+  // soon as the target's key mounts. The poll reads the timeline through a
+  // ref so pages loaded after the click are visible to it, and it treats
+  // "the anchor scrolled into place" (scroller no longer at the very top) as
+  // success-adjacent rather than aborting mid-pagination: user-driven scroll
+  // away from the top is indistinguishable from the jump landing, and in both
+  // cases continuing to poll would fight the user.
+  const handleTurnRailJump = (seq: number) => {
+    const findAnchor = () => timelineRef.current.find(
+      (item): item is (typeof timelineRef.current)[number] & { seq: number } =>
+        'seq' in item && typeof item.seq === 'number' && item.seq >= seq,
+    );
+    const scrollToKey = (key: string): boolean => {
+      const element = document.querySelector<HTMLElement>(
+        `[data-acp-item-key="${CSS.escape(key)}"]`,
+      );
+      if (!element) return false;
+      element.scrollIntoView({ block: 'start' });
+      return true;
+    };
+    const anchorItem = findAnchor();
+    if (anchorItem && scrollToKey(timelineEventKey(anchorItem))) return;
+    const scroller = document.querySelector<HTMLElement>(
+      '[data-acp-conversation-rail="timeline"]',
+    )?.closest('.overflow-y-auto');
+    if (!scroller) return;
+    scroller.scrollTo({ top: 0 });
+    const deadline = Date.now() + 10_000;
+    const poll = () => {
+      // Reflect pages committed since the click: the ref always points at
+      // the newest stable timeline, unlike the captured render's array.
+      const target = findAnchor();
+      if (target && scrollToKey(timelineEventKey(target))) return;
+      if (Date.now() > deadline || scroller.scrollTop > 8) return;
+      window.requestAnimationFrame(poll);
+    };
+    window.requestAnimationFrame(poll);
+  };
+
   const handleReturnToLatestEvents = () => {
     pendingBranchViewRestoreRef.current = null;
     viewportManualIntentRef.current = false;
@@ -6175,9 +6265,31 @@ export function ACPChatDialog(
     const restoredDraft = queuedPromptToAcpComposerDraft(draft);
     if (!composerDraft.restoreIfEmpty(restoredDraft)) return false;
     requestAnimationFrame(() => composerTextareaRef.current?.focus());
-    if (draft.attachmentPaths.length > 0) {
-      void statAttachmentFiles(draft.attachmentPaths).then((fileRefs) => {
-        const enrichedDraft = queuedPromptToAcpComposerDraft(draft, fileRefs);
+    const sources = (draft.workspaceFiles ?? []).filter(source => source.kind !== 'workspace');
+    if (draft.attachmentPaths.length > 0 || sources.length > 0) {
+      // Enrich attachments and structured file references together so neither overwrites the other.
+      void Promise.all([
+        draft.attachmentPaths.length > 0
+          ? statAttachmentFiles(draft.attachmentPaths).then(
+              fileRefs => ({ failed: false, fileRefs }),
+              () => ({ failed: true, fileRefs: [] as never[] }),
+            ) : Promise.resolve({ failed: false, fileRefs: [] as never[] }),
+        Promise.all(sources.map(source => resolveRightWorkspaceFileTarget(source).catch(() => null))),
+      ]).then(([attachmentStat, targetResults]) => {
+        const targets = targetResults.filter(target => target !== null);
+        const unresolvedAttachmentPaths = attachmentStat.failed
+          ? draft.attachmentPaths
+          : draft.attachmentPaths.filter(path => !attachmentStat.fileRefs.some(file => file.path === path));
+        const unresolvedSourceIds = targetResults.flatMap((target, index) => (
+          target ? [] : [fileReferenceIdentity(sources[index])]
+        ));
+        const enrichedDraft = queuedPromptToAcpComposerDraft(
+          draft,
+          attachmentStat.fileRefs,
+          targets,
+          unresolvedAttachmentPaths,
+          unresolvedSourceIds,
+        );
         if (!composerDraft.replaceIfUnchanged(restoredDraft, enrichedDraft)) {
           revokeAttachmentPreviewUrls(enrichedDraft.attachments);
         }
@@ -6188,49 +6300,105 @@ export function ACPChatDialog(
     return true;
   };
 
-  /** Detaches the composer payload for the draft box; the box commits or rolls it back. */
+  /** Captures a snapshot; only successful storage may clear the unchanged input. */
   const captureComposerDraft = async (): Promise<CapturedComposerDraft | null> => {
     const draftSnapshot = composerDraft.draft;
     if (!draftSnapshot) return null;
-    const input = createComposerPromptSubmission(
-      draftSnapshot.content,
-      draftSnapshot.quotes,
-      committedSlashCommand,
-      draftSnapshot.workspaceFiles,
-    );
+    const input = acpComposerDraftToPromptSubmission(draftSnapshot, committedSlashCommand);
     const attachmentPaths = await resolveAttachmentPaths(draftSnapshot.attachments);
-    if (!composerDraft.clearIfUnchanged(draftSnapshot)) return null;
     setComposerContextError(null);
     return {
       input,
       attachmentPaths,
       commit: () => {
+        if (!composerDraft.clearIfUnchanged(draftSnapshot)) return;
+        draftSnapshot.attachments.forEach(closeComposerAttachmentPreview);
         releaseSubmittedAttachments(draftSnapshot.attachments);
         requestAnimationFrame(() => composerTextareaRef.current?.focus());
-      },
-      rollback: () => {
-        composerDraft.restoreIfEmpty(draftSnapshot);
       },
     };
   };
 
   const restoreQueuedPrompt = async (itemId: string) => {
-    if (queueMutationPending || queueSubmitPending || composerDraftOccupied) return;
+    if (
+      queueMutationPending
+      || queueSubmitPending
+      || composerDraftOccupied
+      || composerDraftStoragePendingRef.current
+      || !acquireComposerMutation()
+    ) return;
     setQueueMutationPending(true);
     setQueueRestorePending(true);
     setSendError(null);
+    let editReserved = false;
+    const handoffIsCurrent = () => (
+      mountedRef.current && sessionIdentityRef.current === sessionIdentity
+    );
+    const releaseEditReservation = async () => {
+      if (!editReserved) return;
+      try {
+        const released = await releaseConversationQueuedPromptEdit(
+          projectId, taskId, runId, roundId, nodeId, attemptId,
+          itemId, outerNodeId, outerAttemptId,
+        );
+        if (handoffIsCurrent()) applyQueueLifecycle(released.lifecycle);
+      } finally {
+        editReserved = false;
+      }
+    };
     try {
-      const result = await restoreConversationQueuedPrompt(
+      // Reserve/read first. The durable queue item is consumed only after the
+      // empty composer accepts the complete payload, matching the draft-box
+      // get -> restore -> delete contract. The reservation prevents automatic
+      // dispatch from claiming it between these two handoff steps.
+      const result = await getConversationQueuedPrompt(
         projectId, taskId, runId, roundId, nodeId, attemptId,
         itemId, outerNodeId, outerAttemptId,
       );
+      editReserved = true;
+      if (!handoffIsCurrent()) {
+        try {
+          await releaseEditReservation();
+        } catch {
+          // The durable reservation will be recovered on the next queue read.
+        }
+        return;
+      }
       applyQueueLifecycle(result.lifecycle);
       if (!restoreDraftIntoComposer(result.draft)) {
-        setSendError(t('acp.promptQueue.restoreDraftConflict'));
+        try {
+          await releaseEditReservation();
+        } catch {
+          // Preserve the user-facing handoff conflict; reconciliation will
+          // recover an abandoned edit reservation after process restart.
+        }
+        if (handoffIsCurrent()) setSendError(t('acp.promptQueue.restoreDraftConflict'));
+        return;
       }
+      if (!handoffIsCurrent()) {
+        try {
+          await releaseEditReservation();
+        } catch {
+          // The durable reservation will be recovered on the next queue read.
+        }
+        return;
+      }
+      const deleted = await deleteConversationQueuedPrompt(
+        projectId, taskId, runId, roundId, nodeId, attemptId,
+        itemId, outerNodeId, outerAttemptId,
+      );
+      editReserved = false;
+      if (handoffIsCurrent()) applyQueueLifecycle(deleted.lifecycle);
     } catch (error) {
-      setSendError(displayAppError(t, error));
+      try {
+        await releaseEditReservation();
+      } catch {
+        // Keep the original operation error; durable reconciliation handles
+        // an edit reservation if storage is unavailable during cleanup.
+      }
+      if (handoffIsCurrent()) setSendError(displayAppError(t, error));
     } finally {
+      releaseComposerMutation();
       setQueueMutationPending(false);
       setQueueRestorePending(false);
     }
@@ -6343,16 +6511,34 @@ export function ACPChatDialog(
     }
   };
 
+  /** Re-reads the canonical session so a surfaced queue storage failure can
+   * converge without a page re-entry; all staleness guards live in
+   * applySessionUpdate. */
+  const retryQueuedPromptStorage = async () => {
+    if (queueMutationPending || queueSubmitPending) return;
+    setQueueMutationPending(true);
+    setSendError(null);
+    try {
+      const updated = await getAcpSession(
+        projectId, taskId, runId, roundId, nodeId, attemptId,
+        { branchId, pageSize: effectiveEventPageSize, eventLimit: effectiveEventPageSize },
+        latestSessionRef.current,
+        outerNodeId, outerAttemptId,
+      );
+      applySessionUpdate(updated, 'queue-storage-retry');
+    } catch (error) {
+      setSendError(displayAppError(t, error));
+    } finally {
+      setQueueMutationPending(false);
+    }
+  };
+
   const send = async (historyText?: string) => {
+    if (composerDraftStoragePendingRef.current) return;
     if (historyText !== undefined ? !canSubmitHistory || !historyText.trim() : !canSubmitPrompt) return;
     const draftSnapshot = historyText !== undefined ? adoptHistoryText(historyText) : composerDraft.draft;
     if (!draftSnapshot) return;
-    const submission = createComposerPromptSubmission(
-      draftSnapshot.content,
-      draftSnapshot.quotes,
-      committedSlashCommand,
-      draftSnapshot.workspaceFiles,
-    );
+    const submission = acpComposerDraftToPromptSubmission(draftSnapshot, committedSlashCommand);
     if (composerState.submitTarget !== "none") {
       await submitPrompt(submission, draftSnapshot);
     }
@@ -6493,12 +6679,7 @@ export function ACPChatDialog(
         const draftSnapshot = historyText !== undefined ? adoptHistoryText(historyText) : composerDraft.draft;
         if (!draftSnapshot) { setRuntimeContinueSubmitting(false); return; }
         const accepted = await submitPrompt(
-          createComposerPromptSubmission(
-            draftSnapshot.content,
-            draftSnapshot.quotes,
-            committedSlashCommand,
-            draftSnapshot.workspaceFiles,
-          ),
+          acpComposerDraftToPromptSubmission(draftSnapshot, committedSlashCommand),
           draftSnapshot,
           "runtime-continue",
         );
@@ -6936,6 +7117,26 @@ export function ACPChatDialog(
         title={visibleError?.source === 'runtime' ? runtimeComposerContext?.runtimeErrorTitle ?? undefined : undefined}
       />
       <div className="relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden">
+        {canvasMode !== "raw" ? (
+          <ConversationTurnRail
+            locator={{
+              projectId,
+              taskId,
+              runId,
+              roundId,
+              nodeId,
+              attemptId,
+              branchId,
+              outerNodeId,
+              outerAttemptId,
+            }}
+            // Canonical head watermark: whenever the session admits newer
+            // durable events, the rail incrementally fetches turns after its
+            // newest known seq instead of staying on the opening snapshot.
+            refreshSignal={currentSession?.eventPage.coveredRevision ?? currentSession?.eventPage.newestSeq ?? 0}
+            onJumpToSeq={handleTurnRailJump}
+          />
+        ) : null}
         {canvasMode === "raw" ? (
           <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden p-5">
             <RawFrameViewer
@@ -7155,6 +7356,7 @@ export function ACPChatDialog(
                 onToggleMode={setQueuedPromptDispatchMode}
                 onResumeDispatch={resumeQueuedPromptDispatch}
                 onClear={clearQueuedPrompts}
+                onStorageRetry={retryQueuedPromptStorage}
               />
             ) : null}
             {readOnly && !showDisabledComposer ? null : composerState.externalKind && !showDisabledComposer ? (
@@ -7240,11 +7442,13 @@ export function ACPChatDialog(
                   <ComposerDraftBox
                     projectId={projectId}
                     taskId={taskId}
-                    disabled={readOnly || composerInputDisabled}
+                    disabled={readOnly || composerInputDisabled || queueRestorePending}
                     canSave={composerDraftSavable}
                     composerOccupied={composerDraftOccupied}
                     captureDraft={captureComposerDraft}
                     restoreDraft={restoreDraftIntoComposer}
+                    acquireMutation={acquireComposerMutation}
+                    onPendingChange={changeComposerDraftStoragePending}
                   />
                 )}
                 supersededSession={supersededSession}
@@ -12818,6 +13022,7 @@ export function optimisticUserEvent(
       ...(attachments.length > 0 ? { attachments } : {}),
       ...(workspaceFiles.length > 0 ? {
         workspaceFiles: workspaceFiles.map((file) => ({
+          source: file.source,
           projectId: file.projectId,
           relativePath: file.relativePath,
           ...(file.canonicalPath ? { canonicalPath: file.canonicalPath } : {}),

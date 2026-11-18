@@ -152,14 +152,18 @@ pub fn get_prompt_queue_settings(
 }
 
 #[tauri::command]
-pub fn save_prompt_queue_settings(
+pub async fn save_prompt_queue_settings(
     state: State<'_, DesktopState>,
     input: PromptQueueSettingsInputVm,
 ) -> CommandResult<PromptQueueSettingsVm> {
     let app = state.app().map_err(command_error)?;
-    let mut settings = app.load_settings().map_err(command_error)?;
-    settings.confirm_queued_prompt_interrupt = Some(input.confirm_interrupt);
-    app.save_settings(&settings).map_err(command_error)?;
+    let settings = spawn_blocking_command(move || {
+        let mut settings = app.load_settings().map_err(command_error)?;
+        settings.confirm_queued_prompt_interrupt = Some(input.confirm_interrupt);
+        app.save_settings(&settings).map_err(command_error)?;
+        Ok(settings)
+    })
+    .await?;
     state
         .update_settings_config(&settings)
         .map_err(command_error)?;
@@ -332,6 +336,45 @@ pub async fn get_conversation_task_page(
 }
 
 #[tauri::command]
+pub async fn get_conversation_task_summary(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    task_id: String,
+    task_uuid: Option<String>,
+) -> CommandResult<crate::view_models_conversation::ConversationTaskRowVm> {
+    let context = state.context().map_err(command_error)?;
+    spawn_blocking_command(move || {
+        let state = context.app().load_state().map_err(command_error)?;
+        let (workspace_path, project_id) = workspace_entry_for_project(&state, &project_id)
+            .ok_or_else(|| CommandErrorVm::new("workspace.not-found", serde_json::json!({})))?;
+        let app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
+        let pin = state
+            .conversation_pins
+            .iter()
+            .find(|pin| pin.project_id == project_id && pin.task_id == task_id);
+        let row = crate::view_models_conversation::conversation_task_row_vm(
+            &app,
+            &project_id,
+            &task_id,
+            pin.is_some(),
+            pin.map(|pin| pin.order),
+        )
+        .map_err(command_error)?;
+        if task_uuid
+            .as_ref()
+            .is_some_and(|expected| row.task_uuid.as_ref() != Some(expected))
+        {
+            return Err(CommandErrorVm::new(
+                "task.not-found",
+                serde_json::json!({ "taskId": task_id }),
+            ));
+        }
+        Ok(row)
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn get_conversation_pinned_task_page(
     state: State<'_, DesktopState>,
     cursor: Option<String>,
@@ -350,7 +393,7 @@ pub async fn get_conversation_pinned_task_page(
                 &sources,
                 cursor.as_deref(),
                 limit.unwrap_or(
-                    crate::view_models_conversation::CONVERSATION_TASK_PAGE_DEFAULT_LIMIT,
+                    crate::view_models_conversation::CONVERSATION_PINNED_TASK_PAGE_DEFAULT_LIMIT,
                 ),
             ),
         )
@@ -362,6 +405,40 @@ pub async fn get_conversation_pinned_task_page(
         elapsed_ms = started.elapsed().as_millis(),
         status = if result.is_ok() { "ok" } else { "error" },
         "conversation pinned task page loaded"
+    );
+    result
+}
+
+#[tauri::command]
+pub async fn get_conversation_recent_task_page(
+    state: State<'_, DesktopState>,
+    cursor: Option<String>,
+    limit: Option<usize>,
+) -> CommandResult<crate::view_models_conversation::ConversationRecentTaskPageVm> {
+    let started = Instant::now();
+    let context = state.context().map_err(command_error)?;
+    let result = spawn_blocking_command(move || {
+        let app = context.app();
+        let state = app.load_state().map_err(command_error)?;
+        let sources =
+            conversation_sidebar_sources(&context, &app, &state).map_err(command_error)?;
+        Ok(
+            crate::view_models_conversation::conversation_recent_task_page_vm(
+                &sources,
+                cursor.as_deref(),
+                limit.unwrap_or(
+                    crate::view_models_conversation::CONVERSATION_TASK_PAGE_DEFAULT_LIMIT,
+                ),
+            ),
+        )
+    })
+    .await;
+    info!(
+        target: "gold_band::perf",
+        command = "get_conversation_recent_task_page",
+        elapsed_ms = started.elapsed().as_millis(),
+        status = if result.is_ok() { "ok" } else { "error" },
+        "conversation recent task page loaded"
     );
     result
 }
@@ -1359,9 +1436,8 @@ fn conversation_search_result_for_workspace(
     workspace_name: String,
     result: gold_band::storage::sqlite::TaskSearchResult,
 ) -> Option<crate::view_models_conversation::ConversationSearchResultVm> {
-    let latest_run = workspace_app
-        .task_summary(&result.task_id)
-        .ok()?
+    let summary = workspace_app.task_summary(&result.task_id).ok()?;
+    let latest_run = summary
         .latest_run
         .as_ref()
         .map(crate::view_models_conversation::conversation_run_summary_vm)?;
@@ -1375,6 +1451,7 @@ fn conversation_search_result_for_workspace(
     Some(
         crate::view_models_conversation::ConversationSearchResultVm {
             project_id,
+            task_uuid: summary.task.uuid,
             workspace_path,
             workspace_name,
             task_id: result.task_id,
@@ -1497,9 +1574,15 @@ pub fn get_conversation_run_mode(
                 serde_json::json!({ "projectId": project_id }),
             )
         })?;
+    let initial = app
+        .config
+        .default_execution_profile
+        .as_ref()
+        .map(|profile| profile.initial_run_mode());
     Ok(state
         .conversation_run_modes
         .get(&resolved_project_id)
+        .or(initial.as_ref())
         .map(
             |entry| crate::view_models_conversation::ConversationRunModeVm {
                 mode: entry.mode.as_str().to_string(),
@@ -3032,7 +3115,7 @@ mod tests {
                 id: task_id.to_string(),
                 title: Some("Searchable conversation".to_string()),
                 description: None,
-                uuid: None,
+                uuid: Some("search-task-uuid".to_string()),
             },
         )
         .unwrap();
@@ -3054,6 +3137,7 @@ mod tests {
                 new_rounds_opened: 0,
                 pause_reason: None,
                 uuid: None,
+                rerun: None,
                 last_executed_node: None,
                 worktree: None,
                 execution: RuntimeExecutionState::new(
@@ -3082,6 +3166,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.project_id, "project-a");
+        assert_eq!(result.task_uuid.as_deref(), Some("search-task-uuid"));
         assert_eq!(result.workspace_path, root.as_str());
         assert_eq!(result.latest_run.unwrap().run_id, run_id);
         let _ = std::fs::remove_dir_all(root.as_std_path());

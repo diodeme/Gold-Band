@@ -243,8 +243,32 @@ pub enum AvatarPreference {
     rename_all_fields = "camelCase"
 )]
 pub enum WallpaperImagePreference {
-    Theme,
-    User { asset_id: String },
+    /// Inherits the theme's default wallpaper slot assignment. `asset_id`
+    /// pins one specific theme-declared wallpaper across every declared slot;
+    /// slot styling still belongs to the theme descriptor.
+    Theme {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        asset_id: Option<String>,
+    },
+    User {
+        asset_id: String,
+    },
+    /// Explicitly renders no wallpaper at all; surfaces fall back to the
+    /// theme's plain background tokens.
+    None,
+}
+
+impl WallpaperImagePreference {
+    /// A theme wallpaper pin that is empty or blank carries no meaning and is
+    /// normalized back to the theme's default assignment.
+    pub fn normalized_pin(self) -> Self {
+        match self {
+            Self::Theme { asset_id } => Self::Theme {
+                asset_id: asset_id.filter(|id| !id.trim().is_empty()),
+            },
+            other => other,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -304,11 +328,23 @@ pub const DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT: u8 = 60;
 pub const MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT: u8 = 20;
 pub const MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT: u8 = 100;
 
+/// How a custom wallpaper fits its surface: `cover` fills and crops, `contain`
+/// shows the whole image and letterboxes with the theme background.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WallpaperFitPreference {
+    #[default]
+    Cover,
+    Contain,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WallpaperSchemePersonalization {
     pub image: WallpaperImagePreference,
     pub opacity_percent: u8,
+    #[serde(default)]
+    pub fit: WallpaperFitPreference,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -344,6 +380,49 @@ impl WallpaperPersonalization {
             ResolvedColorScheme::Dark => &mut self.by_color_scheme.dark,
         }
     }
+
+    /// Theme wallpaper pins belong to the theme they were picked from;
+    /// switching themes resets both schemes to the new theme's default slot
+    /// assignment instead of carrying a stale asset reference.
+    pub fn strip_theme_pins(&mut self) {
+        for wallpaper in [
+            &mut self.by_color_scheme.light,
+            &mut self.by_color_scheme.dark,
+        ] {
+            if let WallpaperImagePreference::Theme { asset_id } = &mut wallpaper.image {
+                *asset_id = None;
+            }
+        }
+    }
+
+    /// Themes that declare no wallpapers cannot hold the theme source; both
+    /// schemes collapse it to an explicit none so the UI never shows a
+    /// selected-but-empty theme segment.
+    pub fn collapse_theme_sources_when_unsupported(&mut self) {
+        for wallpaper in [
+            &mut self.by_color_scheme.light,
+            &mut self.by_color_scheme.dark,
+        ] {
+            if matches!(wallpaper.image, WallpaperImagePreference::Theme { .. }) {
+                wallpaper.image = WallpaperImagePreference::None;
+            }
+        }
+    }
+}
+
+pub const MIN_INTERFACE_ZOOM_PERCENT: u16 = 50;
+pub const MAX_INTERFACE_ZOOM_PERCENT: u16 = 250;
+pub const DEFAULT_INTERFACE_ZOOM_PERCENT: u16 = 100;
+
+/// User preference for the workflow graph layout direction. `Auto` follows the
+/// canvas container aspect ratio; the other variants pin one ELK direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorkflowGraphDirectionPreference {
+    #[default]
+    Auto,
+    Horizontal,
+    Vertical,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -353,6 +432,14 @@ pub struct PersonalizationPreference {
     pub typography: TypographyPersonalization,
     pub wallpaper: WallpaperPersonalization,
     pub avatars: AvatarPersonalizationSet,
+    #[serde(default = "default_interface_zoom_percent")]
+    pub interface_zoom_percent: u16,
+    #[serde(default)]
+    pub workflow_graph_direction: WorkflowGraphDirectionPreference,
+}
+
+fn default_interface_zoom_percent() -> u16 {
+    DEFAULT_INTERFACE_ZOOM_PERCENT
 }
 
 impl Default for PersonalizationPreference {
@@ -366,11 +453,12 @@ impl Default for PersonalizationPreference {
             shape: AvatarShapePreference::Theme,
         };
         let wallpaper = || WallpaperSchemePersonalization {
-            image: WallpaperImagePreference::Theme,
+            image: WallpaperImagePreference::Theme { asset_id: None },
             opacity_percent: DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT,
+            fit: WallpaperFitPreference::Cover,
         };
         Self {
-            schema_version: 4,
+            schema_version: 5,
             typography: TypographyPersonalization {
                 ui: typography(),
                 editor: typography(),
@@ -385,13 +473,18 @@ impl Default for PersonalizationPreference {
                 agent: avatar(),
                 user: avatar(),
             },
+            interface_zoom_percent: DEFAULT_INTERFACE_ZOOM_PERCENT,
+            workflow_graph_direction: WorkflowGraphDirectionPreference::Auto,
         }
     }
 }
 
 impl PersonalizationPreference {
     pub fn normalized(mut self) -> Self {
-        self.schema_version = 4;
+        self.schema_version = 5;
+        self.interface_zoom_percent = self
+            .interface_zoom_percent
+            .clamp(MIN_INTERFACE_ZOOM_PERCENT, MAX_INTERFACE_ZOOM_PERCENT);
         self.typography.ui.font_stack = self.typography.ui.font_stack.normalized();
         self.typography.editor.font_stack = self.typography.editor.font_stack.normalized();
         for wallpaper in [
@@ -402,6 +495,7 @@ impl PersonalizationPreference {
                 MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT,
                 MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT,
             );
+            wallpaper.image = wallpaper.image.clone().normalized_pin();
         }
         self
     }
@@ -487,6 +581,7 @@ pub fn catalog_agent_default_config(agent_id: &str) -> Option<ManagedAgentConfig
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpAdapterConfig {
+    #[serde(default)]
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
@@ -533,6 +628,8 @@ impl FromStr for DesktopLanguage {
 #[serde(rename_all = "camelCase")]
 pub struct ManagedAgentConfig {
     pub adapter: AcpAdapterConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executable_path: Option<String>,
     /// 用户实例自己的图标引用；新建后不再跟随 Catalog 更新。
     #[serde(default = "default_agent_icon")]
     pub icon: String,
@@ -581,6 +678,15 @@ impl AgentSkillDirectoryPolicy {
 }
 
 impl ManagedAgentConfig {
+    pub fn diagnostic_fingerprint(&self) -> anyhow::Result<String> {
+        crate::onboarding::model::fingerprint(&serde_json::json!({
+            "command": self.adapter.command,
+            "args": self.adapter.args,
+            "env": self.adapter.env,
+            "executablePath": self.executable_path,
+        }))
+    }
+
     pub fn new(
         adapter: AcpAdapterConfig,
         primary_agent_dir: impl Into<String>,
@@ -588,6 +694,7 @@ impl ManagedAgentConfig {
     ) -> Self {
         Self {
             adapter,
+            executable_path: None,
             icon: default_agent_icon(),
             primary_agent_dir: Some(primary_agent_dir.into()),
             project_primary_agent_dir: None,
@@ -600,6 +707,7 @@ impl ManagedAgentConfig {
 
     pub fn from_catalog(entry: &crate::agent_catalog::AgentCatalogEntry) -> Self {
         Self {
+            executable_path: None,
             adapter: AcpAdapterConfig {
                 command: entry.command.clone(),
                 args: entry.args.clone(),
@@ -622,6 +730,53 @@ impl ManagedAgentConfig {
 
     pub fn supports_system_prompt(&self) -> bool {
         self.system_prompt_delivery != SystemPromptDelivery::None
+    }
+
+    /// Catalog owns npm and local ACP arguments; the instance can override executable location.
+    pub fn executable_adapter(&self, agent_id: &ManagedAgentId) -> Result<AcpAdapterConfig> {
+        let mut adapter = self.adapter.clone();
+        adapter.apply_catalog_launch(agent_id);
+        if adapter.command.trim().is_empty() {
+            return Err(
+                crate::onboarding::model::SetupError::new("agent.launch-command-missing").into(),
+            );
+        }
+        let local_launch = crate::agent_catalog::builtin_agent(agent_id.as_str())
+            .and_then(|entry| entry.local_launch.as_ref());
+        if let Some(path) = &self.executable_path {
+            let path = std::path::Path::new(path);
+            if !path.is_absolute() || !path.is_file() {
+                return Err(crate::onboarding::model::SetupError::new(
+                    "setup.executable-path-invalid",
+                )
+                .into());
+            }
+            adapter.command = dunce::canonicalize(path)?
+                .to_str()
+                .ok_or_else(|| {
+                    crate::onboarding::model::SetupError::new("setup.executable-path-invalid")
+                })?
+                .to_string();
+            if let Some(local) = local_launch {
+                adapter.args = local.args.clone();
+            }
+        } else if let Some(local) = local_launch {
+            let path = crate::process::resolved_child_path(
+                adapter.env.get("PATH").map(std::ffi::OsStr::new),
+            );
+            if let Some(executable) =
+                crate::process::find_executable_in_paths(&local.command, path.as_deref())
+            {
+                adapter.command = executable.to_string_lossy().into_owned();
+                adapter.args = local.args.clone();
+                if let Some(path) = path {
+                    adapter
+                        .env
+                        .insert("PATH".into(), path.to_string_lossy().into_owned());
+                }
+            }
+        }
+        Ok(adapter)
     }
 
     pub fn skill_directory_policy(&self) -> AgentSkillDirectoryPolicy {
@@ -870,6 +1025,12 @@ fn browser_preference_enabled() -> bool {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsConfig {
+    #[serde(skip)]
+    pub storage_revision: crate::storage::configuration::FileRevision,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub onboarding: Option<crate::onboarding::model::OnboardingState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_execution_profile: Option<crate::onboarding::model::DefaultExecutionProfile>,
     #[serde(default)]
     pub settings_schema_version: SettingsSchemaVersion,
     pub log_level: Option<RuntimeLogLevel>,
@@ -926,11 +1087,13 @@ pub fn feishu_scan_auth_config() -> &'static FeishuScanAuthConfig {
         .feishu_scan_auth
 }
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 12;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 13;
 const USE_LOCAL_CLAUDE: bool = false;
 
 const LEGACY_CODEX_ACP_PACKAGE_PREFIX: &str = "@zed-industries/codex-acp";
 const CURRENT_CODEX_ACP_PACKAGE: &str = "@agentclientprotocol/codex-acp@latest";
+const LEGACY_CODEBUDDY_DISPLAY_NAME: &str = "CodeBuddy";
+const CURRENT_CODEBUDDY_DISPLAY_NAME: &str = "WorkBuddy";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -1004,6 +1167,10 @@ impl SettingsConfig {
                 .entry("imIntegrations".to_string())
                 .or_insert_with(|| serde_json::json!({ "channels": [] }));
             migrate_removed_im_notification_preferences(settings);
+            migrated = true;
+        }
+        if version < 13 {
+            migrate_codebuddy_display_name(settings);
             migrated = true;
         }
         if migrated {
@@ -1249,6 +1416,21 @@ fn migrate_codex_acp_package(
         }
     }
     Ok(())
+}
+
+fn migrate_codebuddy_display_name(settings: &mut serde_json::Map<String, serde_json::Value>) {
+    let Some(display_name) = settings
+        .get_mut("agents")
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|agents| agents.get_mut("codebuddy-code"))
+        .and_then(|agent| agent.get_mut("adapter"))
+        .and_then(|adapter| adapter.get_mut("displayName"))
+    else {
+        return;
+    };
+    if display_name.as_str() == Some(LEGACY_CODEBUDDY_DISPLAY_NAME) {
+        *display_name = serde_json::Value::String(CURRENT_CODEBUDDY_DISPLAY_NAME.to_string());
+    }
 }
 
 fn migrate_managed_agent_directories(
@@ -1832,6 +2014,8 @@ fn default_diagnostic_error_params() -> serde_json::Value {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderDiagnosticSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_fingerprint: Option<String>,
     pub available: bool,
     #[serde(default)]
     pub error: Option<DiagnosticError>,
@@ -1841,6 +2025,10 @@ pub struct ProviderDiagnosticSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeConfig {
+    #[serde(default)]
+    pub onboarding: Option<crate::onboarding::model::OnboardingState>,
+    #[serde(default)]
+    pub default_execution_profile: Option<crate::onboarding::model::DefaultExecutionProfile>,
     pub log_level: RuntimeLogLevel,
     #[serde(default)]
     pub interaction_mode: InteractionMode,
@@ -1916,6 +2104,8 @@ impl Default for RuntimeConfig {
                 .expect("Claude is present in the built-in Agent catalog"),
         );
         let base = Self {
+            onboarding: None,
+            default_execution_profile: None,
             log_level: RuntimeLogLevel::Info,
             interaction_mode: InteractionMode::Interactive,
             log_prompts: false,
@@ -1981,6 +2171,8 @@ impl Default for RuntimeConfig {
 
 impl RuntimeConfig {
     pub fn apply_settings(mut self, settings: &SettingsConfig) -> Self {
+        self.onboarding = settings.onboarding.clone();
+        self.default_execution_profile = settings.default_execution_profile.clone();
         if let Some(log_level) = settings.log_level {
             self.log_level = log_level;
         }
@@ -2239,13 +2431,15 @@ mod tests {
         DesktopUpdateBadgeState, FontSizePreference, FontStackPreference, ManagedAgentConfig,
         ManagedAgentId, MulticaAccountRef, MulticaCompletedTask, MulticaTaskConversation,
         MulticaWorkspaceRef, PersonalizationPreference, ProjectAppConfig, ProjectIdentityConfig,
-        RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig, SystemPromptDelivery,
-        TurnFilesConfig, VisualQuality, WallpaperImagePreference, WorkspaceLayoutConfig,
-        catalog_agent_default_config, project_identity_config,
+        ResolvedColorScheme, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
+        SystemPromptDelivery, TurnFilesConfig, VisualQuality, WallpaperFitPreference,
+        WallpaperImagePreference, WallpaperSchemePersonalization, WorkflowGraphDirectionPreference,
+        WorkspaceLayoutConfig, catalog_agent_default_config, project_identity_config,
     };
-    use crate::agent_catalog::builtin_agent_catalog;
+    use crate::agent_catalog::{builtin_agent, builtin_agent_catalog};
     use std::collections::BTreeMap;
     use std::str::FromStr;
+    use tempfile::tempdir;
     use tracing::Level;
 
     fn custom_personalization(
@@ -2342,6 +2536,84 @@ mod tests {
     }
 
     #[test]
+    fn legacy_personalization_schema_v4_upgrades_with_display_defaults() {
+        let (settings, migrated) =
+            SettingsConfig::from_json_value_with_migration(serde_json::json!({
+                "settingsSchemaVersion": 12,
+                "personalization": {
+                    "schemaVersion": 4,
+                    "typography": {
+                        "ui": { "fontStack": { "source": "theme" }, "fontSize": { "source": "theme" } },
+                        "editor": { "fontStack": { "source": "theme" }, "fontSize": { "source": "theme" } }
+                    },
+                    "wallpaper": {
+                        "byColorScheme": {
+                            "light": { "image": { "source": "theme" }, "opacityPercent": 60 },
+                            "dark": { "image": { "source": "theme" }, "opacityPercent": 60 }
+                        }
+                    },
+                    "avatars": {
+                        "agent": { "image": { "source": "theme" }, "shape": { "source": "theme" } },
+                        "user": { "image": { "source": "theme" }, "shape": { "source": "theme" } }
+                    }
+                }
+            }))
+            .unwrap();
+
+        assert!(migrated);
+        let personalization = settings.personalization.unwrap();
+        assert_eq!(personalization.schema_version, 5);
+        assert_eq!(personalization.interface_zoom_percent, 100);
+        assert_eq!(
+            personalization.workflow_graph_direction,
+            WorkflowGraphDirectionPreference::Auto
+        );
+    }
+
+    #[test]
+    fn personalization_display_preferences_clamp_and_serialize() {
+        let preference = PersonalizationPreference {
+            interface_zoom_percent: 500,
+            workflow_graph_direction: WorkflowGraphDirectionPreference::Vertical,
+            ..PersonalizationPreference::default()
+        }
+        .normalized();
+        assert_eq!(preference.schema_version, 5);
+        assert_eq!(preference.interface_zoom_percent, 250);
+        assert_eq!(
+            preference.workflow_graph_direction,
+            WorkflowGraphDirectionPreference::Vertical
+        );
+
+        let parsed: PersonalizationPreference = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 5,
+            "typography": {
+                "ui": { "fontStack": { "source": "theme" }, "fontSize": { "source": "theme" } },
+                "editor": { "fontStack": { "source": "theme" }, "fontSize": { "source": "theme" } }
+            },
+            "wallpaper": {
+                "byColorScheme": {
+                    "light": { "image": { "source": "theme" }, "opacityPercent": 60 },
+                    "dark": { "image": { "source": "theme" }, "opacityPercent": 60 }
+                }
+            },
+            "avatars": {
+                "agent": { "image": { "source": "theme" }, "shape": { "source": "theme" } },
+                "user": { "image": { "source": "theme" }, "shape": { "source": "theme" } }
+            },
+            "interfaceZoomPercent": 40
+        }))
+        .unwrap();
+        // Deserialization keeps the stored value; normalization owns the clamp.
+        assert_eq!(parsed.interface_zoom_percent, 40);
+        assert_eq!(parsed.normalized().interface_zoom_percent, 50);
+
+        let persisted = serde_json::to_value(&preference).unwrap();
+        assert_eq!(persisted["interfaceZoomPercent"], 250);
+        assert_eq!(persisted["workflowGraphDirection"], "vertical");
+    }
+
+    #[test]
     fn legacy_desktop_typography_preferences_are_bounded_during_migration() {
         let (settings, migrated) =
             SettingsConfig::from_json_value_with_migration(serde_json::json!({
@@ -2411,7 +2683,7 @@ mod tests {
 
         assert!(migrated);
         let personalization = settings.personalization.unwrap();
-        assert_eq!(personalization.schema_version, 4);
+        assert_eq!(personalization.schema_version, 5);
         assert_eq!(
             personalization.typography.ui.font_stack,
             FontStackPreference::Theme
@@ -2426,11 +2698,11 @@ mod tests {
         );
         assert_eq!(
             personalization.wallpaper.by_color_scheme.light.image,
-            WallpaperImagePreference::Theme
+            WallpaperImagePreference::Theme { asset_id: None }
         );
         assert_eq!(
             personalization.wallpaper.by_color_scheme.dark.image,
-            WallpaperImagePreference::Theme
+            WallpaperImagePreference::Theme { asset_id: None }
         );
     }
 
@@ -2450,14 +2722,14 @@ mod tests {
 
         assert!(migrated);
         let personalization = settings.personalization.unwrap();
-        assert_eq!(personalization.schema_version, 4);
+        assert_eq!(personalization.schema_version, 5);
         assert_eq!(
             personalization.wallpaper.by_color_scheme.light.image,
-            WallpaperImagePreference::Theme
+            WallpaperImagePreference::Theme { asset_id: None }
         );
         assert_eq!(
             personalization.wallpaper.by_color_scheme.dark.image,
-            WallpaperImagePreference::Theme
+            WallpaperImagePreference::Theme { asset_id: None }
         );
         assert_eq!(
             personalization
@@ -2474,6 +2746,144 @@ mod tests {
                 .dark
                 .opacity_percent,
             DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT
+        );
+    }
+
+    #[test]
+    fn wallpaper_image_preference_round_trips_none_and_theme_pins() {
+        let none = serde_json::json!({ "source": "none" });
+        assert_eq!(
+            serde_json::from_value::<WallpaperImagePreference>(none.clone()).unwrap(),
+            WallpaperImagePreference::None
+        );
+        assert_eq!(
+            serde_json::to_value(WallpaperImagePreference::None).unwrap(),
+            none
+        );
+
+        let plain_theme = serde_json::json!({ "source": "theme" });
+        assert_eq!(
+            serde_json::from_value::<WallpaperImagePreference>(plain_theme.clone()).unwrap(),
+            WallpaperImagePreference::Theme { asset_id: None }
+        );
+        assert_eq!(
+            serde_json::to_value(WallpaperImagePreference::Theme { asset_id: None }).unwrap(),
+            plain_theme
+        );
+
+        let pinned = serde_json::json!({ "source": "theme", "assetId": "mobius-band-light" });
+        assert_eq!(
+            serde_json::from_value::<WallpaperImagePreference>(pinned.clone()).unwrap(),
+            WallpaperImagePreference::Theme {
+                asset_id: Some("mobius-band-light".to_string()),
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(WallpaperImagePreference::Theme {
+                asset_id: Some("mobius-band-light".to_string()),
+            })
+            .unwrap(),
+            pinned
+        );
+
+        assert_eq!(
+            WallpaperImagePreference::Theme {
+                asset_id: Some("   ".to_string()),
+            }
+            .normalized_pin(),
+            WallpaperImagePreference::Theme { asset_id: None }
+        );
+        assert_eq!(
+            WallpaperImagePreference::None.normalized_pin(),
+            WallpaperImagePreference::None
+        );
+    }
+
+    #[test]
+    fn wallpaper_fit_preference_round_trips_and_defaults_to_cover() {
+        let defaults = PersonalizationPreference::default();
+        assert_eq!(
+            defaults.wallpaper.by_color_scheme.light.fit,
+            WallpaperFitPreference::Cover
+        );
+
+        let contain = serde_json::json!("contain");
+        assert_eq!(
+            serde_json::from_value::<WallpaperFitPreference>(contain.clone()).unwrap(),
+            WallpaperFitPreference::Contain
+        );
+        assert_eq!(
+            serde_json::to_value(WallpaperFitPreference::Contain).unwrap(),
+            contain
+        );
+        // Legacy preference files carry no fit field and default to cover.
+        let legacy = serde_json::json!({
+            "image": { "source": "theme" },
+            "opacityPercent": 60
+        });
+        let scheme: WallpaperSchemePersonalization = serde_json::from_value(legacy).unwrap();
+        assert_eq!(scheme.fit, WallpaperFitPreference::Cover);
+    }
+
+    #[test]
+    fn wallpaper_theme_sources_collapse_to_none_for_wallpaperless_themes() {
+        let mut preference = PersonalizationPreference::default();
+        preference
+            .wallpaper
+            .for_color_scheme_mut(ResolvedColorScheme::Light)
+            .image = WallpaperImagePreference::Theme {
+            asset_id: Some("mobius-band-light".to_string()),
+        };
+        preference
+            .wallpaper
+            .for_color_scheme_mut(ResolvedColorScheme::Dark)
+            .image = WallpaperImagePreference::None;
+        preference
+            .wallpaper
+            .collapse_theme_sources_when_unsupported();
+        assert_eq!(
+            preference
+                .wallpaper
+                .for_color_scheme(ResolvedColorScheme::Light)
+                .image,
+            WallpaperImagePreference::None
+        );
+        assert_eq!(
+            preference
+                .wallpaper
+                .for_color_scheme(ResolvedColorScheme::Dark)
+                .image,
+            WallpaperImagePreference::None
+        );
+    }
+
+    #[test]
+    fn wallpaper_theme_pins_are_stripped_without_touching_other_sources() {
+        let mut preference = PersonalizationPreference::default();
+        preference
+            .wallpaper
+            .for_color_scheme_mut(ResolvedColorScheme::Light)
+            .image = WallpaperImagePreference::Theme {
+            asset_id: Some("mobius-band-light".to_string()),
+        };
+        preference
+            .wallpaper
+            .for_color_scheme_mut(ResolvedColorScheme::Dark)
+            .image = WallpaperImagePreference::None;
+        preference.wallpaper.strip_theme_pins();
+        assert_eq!(
+            preference
+                .wallpaper
+                .for_color_scheme(ResolvedColorScheme::Light)
+                .image,
+            WallpaperImagePreference::Theme { asset_id: None }
+        );
+        assert_eq!(
+            preference
+                .wallpaper
+                .for_color_scheme(ResolvedColorScheme::Dark)
+                .image,
+            WallpaperImagePreference::None
         );
     }
 
@@ -2497,7 +2907,7 @@ mod tests {
 
         assert!(migrated);
         let personalization = settings.personalization.unwrap();
-        assert_eq!(personalization.schema_version, 4);
+        assert_eq!(personalization.schema_version, 5);
         for wallpaper in [
             personalization.wallpaper.by_color_scheme.light,
             personalization.wallpaper.by_color_scheme.dark,
@@ -2992,16 +3402,24 @@ mod tests {
             defaults,
             vec![
                 ("claude-acp", Some(".claude"), None, vec![]),
+                ("codebuddy-code", Some(".codebuddy"), None, vec![]),
                 ("codex-acp", Some(".codex"), None, vec![".agents"]),
+                ("pi-acp", Some(".pi/agent"), Some(".pi"), vec![".agents"]),
+                ("deepseek-harness", Some(".dsh"), None, vec![".agents"]),
+                (
+                    "zcode-acp",
+                    Some(".zcode"),
+                    Some(".agents"),
+                    vec![".agents"]
+                ),
+                ("qoder", Some(".qoder"), None, vec![".agents"]),
+                ("kimi", Some(".kimi-code"), None, vec![".agents"]),
                 ("cursor", Some(".cursor"), None, vec![".agents"]),
                 ("gemini", Some(".gemini"), None, vec![".agents"]),
-                ("codebuddy-code", Some(".codebuddy"), None, vec![]),
                 ("goose", Some(".goose"), None, vec![]),
                 ("qwen-code", Some(".qwen"), None, vec![]),
                 ("opencode", Some(".opencode"), None, vec![".agents"]),
-                ("kimi", Some(".kimi-code"), None, vec![".agents"]),
                 ("amp-acp", Some(".agents"), None, vec![".claude"]),
-                ("pi-acp", Some(".pi/agent"), Some(".pi"), vec![".agents"]),
             ]
         );
     }
@@ -3218,6 +3636,51 @@ mod tests {
         assert!(!notifications.run_success);
         assert!(notifications.run_failure);
         assert!(!notifications.acp_turn_finished);
+    }
+
+    #[test]
+    fn settings_v12_renames_default_codebuddy_display_name() {
+        let migrate = |display_name: &str| {
+            SettingsConfig::from_json_value_with_migration(serde_json::json!({
+                "settingsSchemaVersion": 12,
+                "agents": {
+                    "codebuddy-code": {
+                        "adapter": {
+                            "command": "npx",
+                            "displayName": display_name
+                        }
+                    }
+                }
+            }))
+            .unwrap()
+        };
+        let codebuddy = ManagedAgentId::from_str("codebuddy-code").unwrap();
+
+        let (settings, migrated) = migrate("CodeBuddy");
+        assert!(migrated);
+        assert_eq!(
+            settings
+                .agents
+                .unwrap()
+                .get(&codebuddy)
+                .unwrap()
+                .adapter
+                .display_name,
+            "WorkBuddy"
+        );
+
+        let (settings, migrated) = migrate("Custom CodeBuddy");
+        assert!(migrated);
+        assert_eq!(
+            settings
+                .agents
+                .unwrap()
+                .get(&codebuddy)
+                .unwrap()
+                .adapter
+                .display_name,
+            "Custom CodeBuddy"
+        );
     }
 
     #[test]
@@ -3529,8 +3992,39 @@ mod tests {
             } else {
                 assert!(policy.project.write_dir_names.is_empty());
             }
-            expected_project_reads.extend(entry.compatible_agent_dirs.iter().cloned());
+            for directory in &entry.compatible_agent_dirs {
+                if !expected_project_reads.contains(directory) {
+                    expected_project_reads.push(directory.clone());
+                }
+            }
             assert_eq!(policy.project.read_dir_names, expected_project_reads);
+        }
+    }
+
+    #[test]
+    fn explicit_catalog_executable_uses_local_launch_arguments() {
+        let temp = tempdir().unwrap();
+
+        for agent_id in ["gemini", "codebuddy-code", "qwen-code"] {
+            let executable = temp.path().join(format!("{agent_id}.exe"));
+            std::fs::write(&executable, "fixture").unwrap();
+            let entry = builtin_agent(agent_id).unwrap();
+            let local = entry.local_launch.as_ref().unwrap();
+            let id = ManagedAgentId::from_str(agent_id).unwrap();
+            let mut config = ManagedAgentConfig::from_catalog(entry);
+            config.executable_path = Some(executable.to_string_lossy().into_owned());
+
+            let adapter = config.executable_adapter(&id).unwrap();
+
+            assert_eq!(
+                std::path::Path::new(&adapter.command),
+                dunce::canonicalize(&executable).unwrap()
+            );
+            assert_eq!(
+                adapter.args.as_slice(),
+                local.args.as_slice(),
+                "{agent_id} must use local ACP arguments for an explicitly selected executable"
+            );
         }
     }
 

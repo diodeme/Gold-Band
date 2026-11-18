@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 2,
+  "count": 2,
+  "totalBytes": 4679948,
+  "records": [
+    {
+      "id": "vista-inkwash-light",
+      "kind": "wallpaper",
+      "mediaType": "image/webp",
+      "bytes": 3150164,
+      "sha256": "6e2a1101278f6479217d021a1938fecddd79944cfb62d495d1c75c874cf8759f",
+      "outputUrl": "/theme-assets/builtin.vista/6e2a1101278f6479-vista-inkwash-light.webp",
+      "required": true,
+      "licenseId": "vista-inhouse",
+      "width": 2048,
+      "height": 1280
+    },
+    {
+      "id": "vista-summit-dark",
+      "kind": "wallpaper",
+      "mediaType": "image/webp",
+      "bytes": 1529784,
+      "sha256": "fdc204a9c07cb1a24352196e47bd220935274c7cf92e092650f4e07be8c4eb6a",
+      "outputUrl": "/theme-assets/builtin.vista/fdc204a9c07cb1a2-vista-summit-dark.webp",
+      "required": true,
+      "licenseId": "vista-inhouse",
+      "width": 2048,
+      "height": 1280
+    }
+  ]
+}

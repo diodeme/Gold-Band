@@ -81,3 +81,10 @@ Gold Band 的原生浏览器、子 WebView 和地址建议 overlay 共用 Tauri 
 实现契约由 tao 上游修复提交 `c704261c519c58cfdd0bc2d58ba24e06a0b71c92` 固定提供：先在无锁区读取下一条键盘/IME 消息，再在最小临界区更新键盘状态；布局缓存锁只覆盖实际读取和事件构造，不跨越 Win32 消息泵调用。该补丁只影响 Windows tao 输入路径，不改变业务 canonical state、WebView 内容或跨平台行为。
 
 验收必须覆盖地址栏输入、中文 IME、地址建议显隐、子 WebView 聚焦切换，以及窗口最小化/恢复和调整尺寸；主窗口消息泵在这些操作后仍须可响应，后台 runtime 与 WebView2 子进程不得因输入处理被阻塞。自动回归由 `tests/tao_windows_message_reentrancy.rs` 固化：源码契约测试检查锁外 peek，Windows 子进程测试并发发送两个 `WM_KEYDOWN` 并由父进程设置 10 秒超时；旧实现超时即判失败，修复提交下两类测试均须通过。
+
+## 12. 启动分包初始化与平台化引导（2026-11-16）
+
+- 业务 chunk 的模块初始化必须保证“被依赖常量先声明、后使用”。2026-11-16 的启动失败来自 mock Agent 目录在顶层初始化时读取尚未声明的本地启动表，生产压缩后表现为 `Cannot access 'i$' before initialization`；它被启动保护捕获为 `webview.app_chunk.load_failed`，但不属于 WebView 能力缺陷。修复通过恢复数据声明顺序，并用接口级导入与目录断言固化，不为单个压缩变量增加运行时分支持判。
+- 启动错误码、能力探测与动态加载边界保持不变。`webview.capability.unsupported` 的指引按运行时平台投影：Windows 指向 Microsoft Edge WebView2 Runtime，macOS 指向系统 WKWebView / macOS 更新，其他平台给出通用系统或 WebView 更新指引；`webview.app_chunk.load_failed` 只提示重新安装最新版并反馈诊断，不再错误展示 macOS 升级步骤。
+- 平台只用于启动错误对客引导，不参与能力分级、业务状态或持久化。诊断仍只包含 user agent、能力布尔值、派生策略和结构化错误信息。
+- 回归由 `web/tests/webview-bootstrap.test.ts` 固定 Windows/macOS 平台识别、Windows 指引与 chunk 失败通用指引；`web/tests/mock-agent-catalog.test.ts` 固定 mock 目录可初始化且连接条件完整。生产构建后须确认 `main` chunk 中本地启动表先于目录构造。

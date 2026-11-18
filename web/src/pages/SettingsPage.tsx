@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { AppearancePreference, AppInfoVm, AvatarKind, AvatarPreferencesVm, AvatarShape, BrowserPreferences, ColorSchemePreference, DesktopLanguage, MetricsSettingsVm, PersonalizationPreference, PreferencesVm, ResolvedColorScheme, SaveDesktopAvatarInput, UpdateStatusVm, UpdaterSettingsVm, VisualQuality, WallpaperPreferencesVm } from '../types';
+import type { AppearancePreference, AppInfoVm, AvatarKind, AvatarPreferencesVm, AvatarShape, BrowserPreferences, ColorSchemePreference, DesktopLanguage, MetricsSettingsVm, PersonalizationPreference, PreferencesVm, ResolvedColorScheme, SaveDesktopAvatarInput, UpdateStatusVm, UpdaterSettingsVm, VisualQuality, WallpaperFitPreference, WallpaperPreferencesVm } from '../types';
 import {
   appearanceWithQuality,
   appearanceWithTheme,
@@ -27,6 +27,7 @@ import { Page, PageHeader } from '@/components/PageScaffold';
 import { Button } from '@/components/ui/button';
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { Input } from '@/components/ui/input';
+import { Slider } from '@/components/ui/slider';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
@@ -40,12 +41,21 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { cn } from '@/lib/utils';
 import { useThemeWallpaperSurface } from '@/components/theme/ThemeAssetsContext';
 import { formatLocalDateTime } from '@/lib/datetime';
+import {
+  INTERFACE_ZOOM_DEFAULT,
+  INTERFACE_ZOOM_MAX,
+  INTERFACE_ZOOM_MIN,
+  INTERFACE_ZOOM_STEP,
+  parseInterfaceZoomInput,
+  withInterfaceZoomPercent,
+} from '@/lib/desktop-zoom';
 import { normalizeFontCatalogFamilies } from '@/lib/font-families';
 import { ScheduledRuntimeSettings } from '@/components/scheduled-tasks/ScheduledRuntimeSettings';
 import { AvatarSettings } from '@/components/settings/AvatarSettings';
 import { WallpaperSettings } from '@/components/settings/WallpaperSettings';
 import { ImIntegrationSettings } from '@/components/settings/ImIntegrationSettings';
 import { BrowserSettings } from '@/components/settings/BrowserSettings';
+import { OnboardingSettings } from '@/components/settings/OnboardingSettings';
 import { RemoteImageTrustSettings } from '@/components/settings/RemoteImageTrustSettings';
 import { PromptQueueSettings } from '@/components/settings/PromptQueueSettings';
 import { UpdateDownloadProgress } from '@/components/update/UpdateDownloadProgress';
@@ -103,6 +113,10 @@ interface SettingsPageProps {
   onSelectRecentWallpaper: (colorScheme: ResolvedColorScheme, wallpaperId: string) => Promise<WallpaperPreferencesVm | undefined>;
   onSaveWallpaperOpacity: (colorScheme: ResolvedColorScheme, opacityPercent: number) => Promise<WallpaperPreferencesVm | undefined>;
   onRestoreThemeWallpaper: (colorScheme: ResolvedColorScheme) => Promise<WallpaperPreferencesVm | undefined>;
+  onClearWallpaper: (colorScheme: ResolvedColorScheme) => Promise<WallpaperPreferencesVm | undefined>;
+  onDeleteRecentWallpaper: (wallpaperId: string) => Promise<WallpaperPreferencesVm | undefined>;
+  onSelectThemeWallpaper: (colorScheme: ResolvedColorScheme, assetId: string) => Promise<WallpaperPreferencesVm | undefined>;
+  onSaveWallpaperFit: (colorScheme: ResolvedColorScheme, fit: WallpaperFitPreference) => Promise<WallpaperPreferencesVm | undefined>;
   metricsSettings?: MetricsSettingsVm | null;
   onSaveMetricsSettings?: (enabled: boolean, metricsBaseUrl: string | null, apiKey: string | null) => Promise<MetricsSettingsVm | undefined>;
   onSaveUpdaterSettings: (overrideUrl: string | null) => Promise<UpdaterSettingsVm | undefined>;
@@ -112,7 +126,7 @@ interface SettingsPageProps {
   onViewAdvanced: () => Promise<void> | void;
 }
 
-export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSettings = null, onSaveMetricsSettings, updateStatus, showAdvancedUpdateDot, showUpdatesSectionDot, clientVersion, busy, onSave, onSaveAvatar, onSelectRecentAvatar, onSaveAvatarShape, onClearAvatar, onImportWallpaper, onSelectRecentWallpaper, onSaveWallpaperOpacity, onRestoreThemeWallpaper, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate, onViewSettings, onViewAdvanced }: SettingsPageProps) {
+export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSettings = null, onSaveMetricsSettings, updateStatus, showAdvancedUpdateDot, showUpdatesSectionDot, clientVersion, busy, onSave, onSaveAvatar, onSelectRecentAvatar, onSaveAvatarShape, onClearAvatar, onImportWallpaper, onSelectRecentWallpaper, onSaveWallpaperOpacity, onRestoreThemeWallpaper, onClearWallpaper, onDeleteRecentWallpaper, onSelectThemeWallpaper, onSaveWallpaperFit, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate, onViewSettings, onViewAdvanced }: SettingsPageProps) {
   const measuredThemeDrawerRef = useWebviewMeasuredContainer<HTMLDivElement>('theme-drawer');
   const readOnly = useReadOnlyExperience();
   useThemeWallpaperSurface();
@@ -122,6 +136,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
   const [language, setLanguage] = useState(preferences.language);
   const [uiFontSize, setUiFontSize] = useState(() => effectiveTypographySize(preferences.appearance, preferences.personalization, 'ui'));
   const [editorFontSize, setEditorFontSize] = useState(() => effectiveTypographySize(preferences.appearance, preferences.personalization, 'editor'));
+  const [interfaceZoomPercent, setInterfaceZoomPercent] = useState(() => preferences.personalization.interfaceZoomPercent);
   const useLocalClaude = false;
   const [verboseLogging, setVerboseLogging] = useState(preferences.verboseLogging);
   const [browser, setBrowser] = useState(preferences.browser);
@@ -137,6 +152,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
   useEffect(() => setLanguage(preferences.language), [preferences.language]);
   useEffect(() => setUiFontSize(effectiveTypographySize(preferences.appearance, preferences.personalization, 'ui')), [preferences.appearance, preferences.personalization]);
   useEffect(() => setEditorFontSize(effectiveTypographySize(preferences.appearance, preferences.personalization, 'editor')), [preferences.appearance, preferences.personalization]);
+  useEffect(() => setInterfaceZoomPercent(preferences.personalization.interfaceZoomPercent), [preferences.personalization.interfaceZoomPercent]);
   useEffect(() => setVerboseLogging(preferences.verboseLogging), [preferences.verboseLogging]);
   useEffect(() => setBrowser(preferences.browser), [preferences.browser]);
   useEffect(() => setUpdaterOverrideUrl(updaterSettings.overrideUrl ?? ''), [updaterSettings.overrideUrl]);
@@ -235,6 +251,13 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
     applyPersonalization(withTypographySize(personalization, kind, { source: 'custom', px: value }));
   };
 
+  const chooseZoomPercent = (value: number) => {
+    const next = withInterfaceZoomPercent(personalization, value);
+    setPersonalization(next);
+    setInterfaceZoomPercent(next.interfaceZoomPercent);
+    onSave(appearance, next, language, useLocalClaude, verboseLogging, browser);
+  };
+
   const resetTypographySize = (kind: 'ui' | 'editor') => {
     const next = withTypographySize(personalization, kind, { source: 'theme' });
     setPersonalization(next);
@@ -274,8 +297,8 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
 
   const effectiveAppearance = resolveAppearance(appearance);
   const themeWallpapersByColorScheme = useMemo(() => ({
-    light: resolveAppearance({ ...appearance, colorScheme: 'light' }).wallpapers.settings,
-    dark: resolveAppearance({ ...appearance, colorScheme: 'dark' }).wallpapers.settings,
+    light: resolveAppearance({ ...appearance, colorScheme: 'light' }).wallpapers,
+    dark: resolveAppearance({ ...appearance, colorScheme: 'dark' }).wallpapers,
   }), [appearance]);
   const currentTheme = getThemePackage(appearance.themeId);
   const defaultUiFontDisplayName = themeFontStackDisplayName(
@@ -301,19 +324,23 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
         title={<span className="text-title">{t('settings.title')}</span>}
       />
 
-      <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-5 xl:p-6">
-        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'general' | 'appearance' | 'advanced')} className="space-y-4">
-        <TabsList className={cn('grid w-full max-w-md', readOnly ? 'grid-cols-2' : 'grid-cols-3')}>
-          <TabsTrigger value="general" className="min-w-0 px-1">{t('settings.tabs.general')}</TabsTrigger>
-          <TabsTrigger value="appearance" className="min-w-0 px-1">{t('settings.tabs.appearance')}</TabsTrigger>
-          {!readOnly && <TabsTrigger value="advanced" className="min-w-0 px-1">
-            <span className="inline-flex min-w-0 items-center gap-1">
-              <span>{t('settings.tabs.advanced')}</span>
-              {showAdvancedUpdateDot ? <UpdateDot /> : null}
-            </span>
-          </TabsTrigger>}
-        </TabsList>
+      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'general' | 'appearance' | 'advanced')} className="flex min-h-0 flex-1 flex-col">
+        {/* The tab rail lives outside the scroll container: it is pinned by
+            layout, so scrolling content can never render behind it. */}
+        <div className="shrink-0 border-b border-border/45 px-5 py-3 xl:px-6">
+          <TabsList className={cn('grid w-full max-w-md', readOnly ? 'grid-cols-2' : 'grid-cols-3')}>
+            <TabsTrigger value="general" className="min-w-0 px-1">{t('settings.tabs.general')}</TabsTrigger>
+            <TabsTrigger value="appearance" className="min-w-0 px-1">{t('settings.tabs.appearance')}</TabsTrigger>
+            {!readOnly && <TabsTrigger value="advanced" className="min-w-0 px-1">
+              <span className="inline-flex min-w-0 items-center gap-1">
+                <span>{t('settings.tabs.advanced')}</span>
+                {showAdvancedUpdateDot ? <UpdateDot /> : null}
+              </span>
+            </TabsTrigger>}
+          </TabsList>
+        </div>
 
+        <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-5 xl:p-6">
         <TabsContent value="general" className="m-0">
           <AppCard className="gap-0 overflow-hidden py-0">
             <SettingsSection title={t('settings.language')}>
@@ -336,6 +363,9 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                   onSave(appearance, personalization, language, useLocalClaude, verboseLogging, next);
                 }}
               />
+            </SettingsSection>
+            <SettingsSection title={t('onboarding.settingsTitle')} divided>
+              <OnboardingSettings />
             </SettingsSection>
             {!readOnly && <SettingsSection title={t('scheduled.settings.title')} divided>
               <ScheduledRuntimeSettings />
@@ -410,6 +440,16 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                     </Select>
                   </div>
                 ) : null}
+                <div className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-border/45 p-3" data-interface-zoom-row="true">
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold">{t('settings.interfaceZoom')}</div>
+                    <div className="text-xs text-muted-foreground">{t('settings.interfaceZoomDescription')}</div>
+                  </div>
+                  <InterfaceZoomControl
+                    value={interfaceZoomPercent}
+                    onCommit={chooseZoomPercent}
+                  />
+                </div>
               </div>
             </SettingsSection>
 
@@ -480,6 +520,10 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                 onSelectRecentWallpaper={onSelectRecentWallpaper}
                 onSaveWallpaperOpacity={onSaveWallpaperOpacity}
                 onRestoreThemeWallpaper={onRestoreThemeWallpaper}
+                onClearWallpaper={onClearWallpaper}
+                onDeleteRecentWallpaper={onDeleteRecentWallpaper}
+                onSelectThemeWallpaper={onSelectThemeWallpaper}
+                onSaveWallpaperFit={onSaveWallpaperFit}
               />
             </SettingsSection>}
 
@@ -643,10 +687,10 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
               </SettingsSection>
           </AppCard>
         </TabsContent>
-      </Tabs>
 
-      {clientVersion ? <Badge variant="outline" className="font-mono text-muted-foreground"><span className="mr-2 size-2 rounded-full bg-gold-success" /> {t('settings.clientVersion', { version: clientVersion })}</Badge> : null}
-      </div>
+        {clientVersion ? <Badge variant="outline" className="font-mono text-muted-foreground"><span className="mr-2 size-2 rounded-full bg-gold-success" /> {t('settings.clientVersion', { version: clientVersion })}</Badge> : null}
+        </div>
+      </Tabs>
     </Page>
   );
 }
@@ -737,7 +781,7 @@ function withTypographyFontStack(
   const normalized = normalizeFontFamilies(families);
   return {
     ...personalization,
-    schemaVersion: 4,
+    schemaVersion: 5,
     typography: {
       ...personalization.typography,
       [kind]: {
@@ -822,6 +866,93 @@ function FontPreviewSample({ sample, fontFamily }: { sample: string; fontFamily:
           <span className="text-primary">{sample}</span>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Zoom row control: numeric input + slider + reset. Manual input keeps the
+ * exact integer the user typed (clamped to 50–250 with the slider following);
+ * non-numeric text is marked invalid and never changes the zoom.
+ */
+function InterfaceZoomControl({
+  value,
+  onCommit,
+}: {
+  value: number;
+  onCommit: (value: number) => void;
+}) {
+  const { t } = useTranslation();
+  const [draft, setDraft] = useState(String(value));
+  // The thumb follows the drag locally; the webview zoom is only applied on
+  // commit so mid-gesture re-layouts cannot kick the slider away.
+  const [sliderValue, setSliderValue] = useState(value);
+  const [invalid, setInvalid] = useState(false);
+  // External value changes (reset button, persisted shortcut commits) resync
+  // the input text and clear any stale invalid hint.
+  useEffect(() => {
+    setDraft(String(value));
+    setSliderValue(value);
+    setInvalid(false);
+  }, [value]);
+  const commitDraft = () => {
+    const parsed = parseInterfaceZoomInput(draft);
+    if (parsed.kind === 'invalid') {
+      setInvalid(true);
+      return;
+    }
+    setDraft(String(parsed.percent));
+    setInvalid(false);
+    onCommit(parsed.percent);
+  };
+  return (
+    <div className="flex shrink-0 items-center gap-3">
+      <label className="flex items-center gap-1.5 text-sm text-muted-foreground">
+        <Input
+          aria-label={t('settings.interfaceZoom')}
+          aria-invalid={invalid}
+          className={cn('h-9 w-20 text-center tabular-nums', invalid && 'border-destructive focus-visible:ring-destructive/60')}
+          inputMode="numeric"
+          value={draft}
+          onChange={(event) => {
+            setDraft(event.currentTarget.value);
+            setInvalid(false);
+          }}
+          onBlur={commitDraft}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') event.currentTarget.blur();
+          }}
+        />
+        <span>%</span>
+      </label>
+      {invalid ? (
+        <span role="alert" className="text-xs text-destructive" data-interface-zoom-invalid="true">
+          {t('settings.interfaceZoomInvalid')}
+        </span>
+      ) : null}
+      <Slider
+        aria-label={t('settings.interfaceZoom')}
+        className="w-40"
+        min={INTERFACE_ZOOM_MIN}
+        max={INTERFACE_ZOOM_MAX}
+        step={INTERFACE_ZOOM_STEP}
+        value={[sliderValue]}
+        onValueChange={(values) => {
+          const next = values[0] ?? sliderValue;
+          setSliderValue(next);
+          setDraft(String(next));
+          setInvalid(false);
+        }}
+        onValueCommit={(values) => onCommit(values[0] ?? sliderValue)}
+      />
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button type="button" variant="ghost" size="icon-sm" aria-label={t('settings.resetZoom')} onPointerDown={(event) => event.preventDefault()} onClick={() => onCommit(INTERFACE_ZOOM_DEFAULT)}>
+            <RotateCcw className="size-3.5" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{t('settings.resetZoom')}</TooltipContent>
+      </Tooltip>
     </div>
   );
 }

@@ -11,13 +11,34 @@ export type FontStackPreference = { source: 'theme' } | { source: 'custom'; fami
 export type FontSizePreference = { source: 'theme' } | { source: 'custom'; px: number };
 export type AvatarPreference = { source: 'theme' } | { source: 'user'; assetId: string };
 export type AvatarShapePreference = { source: 'theme' } | { source: 'custom'; value: AvatarShape };
-export type WallpaperImagePreference = { source: 'theme' } | { source: 'user'; assetId: string };
+/**
+ * Wallpaper source per color scheme. `theme` inherits the theme's default
+ * slot assignment; an optional `assetId` pins one theme-declared wallpaper
+ * across all slots (slot styling stays with the theme). `user` references an
+ * imported asset; `none` explicitly renders no wallpaper at all.
+ */
+export type WallpaperImagePreference =
+  | { source: 'theme'; assetId?: string }
+  | { source: 'user'; assetId: string }
+  | { source: 'none' };
+/** `cover` fills and crops, `contain` letterboxes with the theme background. */
+export type WallpaperFitPreference = 'cover' | 'contain';
+/** Session-level turn navigation index entry for the conversation turn rail. */
+export interface ConversationTurnIndexEntryVm {
+  seq: number;
+  timestamp: string;
+  /** prompt | tool | compaction | permission */
+  kind: 'prompt' | 'tool' | 'compaction' | 'permission';
+  promptPreview: string | null;
+}
 export interface WallpaperSchemePersonalization {
   image: WallpaperImagePreference;
   opacityPercent: number;
+  fit?: WallpaperFitPreference;
 }
+export type WorkflowGraphDirectionPreference = 'auto' | 'horizontal' | 'vertical';
 export interface PersonalizationPreference {
-  schemaVersion: 4;
+  schemaVersion: 5;
   typography: {
     ui: { fontStack: FontStackPreference; fontSize: FontSizePreference };
     editor: { fontStack: FontStackPreference; fontSize: FontSizePreference };
@@ -29,6 +50,10 @@ export interface PersonalizationPreference {
     agent: { image: AvatarPreference; shape: AvatarShapePreference };
     user: { image: AvatarPreference; shape: AvatarShapePreference };
   };
+  /** Interface zoom percent applied to the app webviews (50–250, default 100). */
+  interfaceZoomPercent: number;
+  /** Workflow graph layout direction preference; `auto` follows container aspect. */
+  workflowGraphDirection: WorkflowGraphDirectionPreference;
 }
 export type DesktopLanguage = 'zh-cn' | 'zh-tw' | 'en' | 'ja-jp' | 'ko-kr' | 'pt-br' | 'es';
 export type BrowserSearchEngine = 'baidu' | 'google' | 'bing';
@@ -503,6 +528,7 @@ export interface ManagedAgentVm {
   agentType: string;
   displayName: string;
   command: string;
+  executablePath?: string | null;
   args: string[];
   env: AgentEnvEntryVm[];
   iconKey: string;
@@ -590,6 +616,7 @@ export interface AgentCatalogEntryVm {
   label: string;
   iconKey: string;
   version: string;
+  provenance: AgentCatalogProvenanceVm;
   description: string;
   repository?: string | null;
   website?: string | null;
@@ -603,12 +630,36 @@ export interface AgentCatalogEntryVm {
   defaultCommand: string;
   defaultArgs: string[];
   defaultEnv: AgentEnvEntryVm[];
+  connectionRequirements: AgentConnectionRequirementsVm;
+}
+
+export interface AgentExecutableVm {
+  command: string;
+  args: string[];
+}
+
+export interface AgentConnectionRequirementsVm {
+  pathCommand: string;
+  pathArgs: string[];
+  installedCli: string | null;
+  npxFallback: AgentExecutableVm | null;
+  npxRequiresPreparedPackage: boolean;
+}
+
+export type AgentCatalogSourceKind = 'official-registry' | 'local-supplement';
+export type AgentIntegrationOrigin = 'official' | 'community-adapter';
+
+export interface AgentCatalogProvenanceVm {
+  sourceKind: AgentCatalogSourceKind;
+  integrationOrigin: AgentIntegrationOrigin;
+  validatedVersion: string;
 }
 
 export interface ManagedAgentInput {
   displayName: string;
   icon: string;
   command: string;
+  executablePath?: string | null;
   args: string[];
   env: Record<string, string>;
   primaryAgentDir: string;
@@ -1569,6 +1620,11 @@ export interface ImportProfilesInput {
   dynamicTemplate: boolean;
 }
 
+export interface ImportProfileFilesInput {
+  filePaths: string[];
+  dynamicTemplate: boolean;
+}
+
 export type ImportRecordStatus =
   | 'imported'
   | 'imported-with-fallbacks'
@@ -1668,6 +1724,30 @@ export interface RunSummaryVm {
   pauseReason?: string | null;
 }
 
+export interface RetryCurrentNodeRequest {
+  projectId: string;
+  taskId: string;
+  runId: string;
+  expectedRoundId: string;
+  expectedNodeId: string;
+  expectedAttemptId: string;
+}
+
+export interface RetryCurrentNodeLocatorVm {
+  projectId: string;
+  taskId: string;
+  runId: string;
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+}
+
+export interface RetryCurrentNodeAcceptedVm {
+  operationId: string;
+  locator: RetryCurrentNodeLocatorVm;
+  run: RunSummaryVm;
+}
+
 export interface RoundSummaryVm {
   id: string;
   runId: string;
@@ -1705,6 +1785,7 @@ export interface RuntimeDisplayVm {
 
 export interface GraphNodeVm {
   id: string;
+  roundId?: string | null;
   nodeId?: string | null;
   sequence?: number | null;
   label: string;
@@ -1720,6 +1801,7 @@ export interface GraphNodeVm {
   artifactCount: number;
   attachmentCount: number;
   current: boolean;
+  retryable: boolean;
   iconKey?: string | null;
   sessionMode?: string | null;
   continueFromNodeId?: string | null;
@@ -1736,6 +1818,7 @@ export interface GraphAttemptVm {
   sessionMode?: string | null;
   acpSessionId?: string | null;
   current: boolean;
+  retryable: boolean;
 }
 
 export interface GraphEdgeVm {
@@ -2766,11 +2849,16 @@ export interface ConversationRunSummaryVm {
 }
 
 export interface ConversationSidebarVm {
+  // A single search target outside the regular paging window; its row stays in tasksByWorkspace.
+  locatedTask?: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'> | null;
   loadStatus: ConversationLoadStatus;
   workspaces: ConversationWorkspaceVm[];
   pinRefs: PinRef[];
   pinnedTasks: ConversationTaskRowVm[];
   pinnedTaskPage: ConversationPageLoadVm;
+  // Cross-workspace recent conversations; shown for any workspace count.
+  recentTasks: ConversationRecentTaskRowVm[];
+  recentTaskPage: ConversationPageLoadVm;
   tasksByWorkspace: Record<string, ConversationTaskRowVm[]>;
   workspaceTaskPages: Record<string, ConversationPageLoadVm>;
   lastActiveWorkspaceId?: string | null;
@@ -2786,6 +2874,17 @@ export interface ConversationTaskPageVm {
 
 export interface ConversationPinnedTaskPageVm {
   tasks: ConversationTaskRowVm[];
+  nextCursor?: string | null;
+  errors: ConversationListItemErrorVm[];
+}
+
+/** Cross-workspace recent row: the shared task row plus the owning workspace name. */
+export interface ConversationRecentTaskRowVm extends ConversationTaskRowVm {
+  workspaceName: string;
+}
+
+export interface ConversationRecentTaskPageVm {
+  tasks: ConversationRecentTaskRowVm[];
   nextCursor?: string | null;
   errors: ConversationListItemErrorVm[];
 }
@@ -2872,9 +2971,13 @@ export interface ResolveAppExitInput {
   decision: AppExitDecision;
 }
 
+export type ConversationQueuedPromptState = 'queued' | 'editing' | 'dispatching';
+
 export interface ConversationQueuedPromptVm {
   id: string;
-  content: string;
+  /** Durable lifecycle state; every state stays visible in the projection. */
+  state: ConversationQueuedPromptState;
+  contentPreview: string;
   attachmentCount: number;
   quoteCount: number;
   workspaceFileCount: number;
@@ -2910,9 +3013,24 @@ export interface ConversationPromptInput {
   workspaceFiles?: PromptWorkspaceFileRef[];
 }
 
-export interface PromptWorkspaceFileRef {
+export type PromptWorkspaceFileRef =
+  | { kind: 'workspace'; projectId: string; relativePath: string }
+  | { kind: 'artifact'; locator: TurnFileLocatorVm & { taskUuid?: string | null }; name: string }
+  | { kind: 'turn-file'; locator: TurnFileLocatorVm & { taskUuid?: string | null }; changeSetId: string; changeId: string }
+  | { kind: 'turn-attachment'; locator: TurnFileLocatorVm & { taskUuid?: string | null }; changeSetId: string; attachmentId: string }
+  | { kind: 'git-file'; projectId: string; workspacePath: string | null; relativePath: string };
+
+export interface RightWorkspaceFileTargetVm {
+  source: PromptWorkspaceFileRef;
   projectId: string;
-  relativePath: string;
+  name: string;
+  absolutePath: string | null;
+  relativePath: string | null;
+  relativeBase: 'attempt' | 'workspace' | 'attachment' | null;
+  workspacePath: string | null;
+  byteLength: number | null;
+  mimeType: string;
+  availability: { kind: 'available' } | { kind: 'unavailable'; code: string; params: Record<string, unknown> };
 }
 
 export interface ConversationPromptQueueVm {
@@ -2922,6 +3040,8 @@ export interface ConversationPromptQueueVm {
   dispatchMode: 'auto' | 'manual';
   autoDispatchSuspended: boolean;
   suspensionReason?: 'stopped' | 'failed' | null;
+  /** The durable queue file could not be read; the panel must surface it. */
+  storageError: boolean;
 }
 
 export interface ConversationAttemptLifecycleVm {
@@ -2953,6 +3073,7 @@ export interface ConversationSessionLeafVm {
   runtimeDisplay: RuntimeDisplayVm;
   lifecycle?: ConversationAttemptLifecycleVm | null;
   current: boolean;
+  inherited?: boolean;
   manualCheckPending: boolean;
   startedAt?: string | null;
   finishedAt?: string | null;
@@ -3090,6 +3211,19 @@ export interface ConversationRunVm {
   runtimeError?: RuntimeErrorInfoVm | null;
   scheduledTaskId?: string | null;
   worktree?: ConversationRunWorktreeVm | null;
+  sealed?: boolean;
+  rerunSuccessorRunId?: string | null;
+  rerunOrigin?: {
+    sourceRunId: string;
+    sourceRunUuid?: string | null;
+    sourceRoundId: string;
+    sourceRoundIndex: number;
+    sourceNodeId: string;
+    sourceAttemptId: string;
+    operationId: string;
+    inheritedTraceSequence: number;
+    sourceAuthoringRevision: number;
+  } | null;
 }
 
 export interface ScheduledTaskConfig {
@@ -3127,7 +3261,7 @@ export interface ConversationQueuedPromptDraftVm {
 /** One saved composer draft; drafts belong to the conversation task and are never auto-sent. */
 export interface ConversationComposerDraftVm {
   id: string;
-  content: string;
+  contentPreview: string;
   attachmentCount: number;
   quoteCount: number;
   workspaceFileCount: number;
@@ -3142,7 +3276,7 @@ export interface ConversationComposerDraftBoxVm {
   items: ConversationComposerDraftVm[];
 }
 
-export interface ConversationComposerDraftTakeVm {
+export interface ConversationComposerDraftReadVm {
   draft: ConversationQueuedPromptDraftVm;
   drafts: ConversationComposerDraftBoxVm;
 }
@@ -3268,6 +3402,7 @@ export interface WorkflowRepairTarget {
 
 export interface ConversationSearchResultVm {
   projectId: string;
+  taskUuid?: string | null;
   workspacePath: string;
   workspaceName: string;
   taskId: string;

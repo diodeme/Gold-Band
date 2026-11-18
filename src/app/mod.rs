@@ -1,5 +1,6 @@
 mod conversation_run;
 mod execution_plan_service;
+mod failed_node_rerun;
 mod ids;
 pub mod intervention;
 mod node_executor;
@@ -19,12 +20,13 @@ pub use self::conversation_run::{
     ConversationRunLaunch, ConversationWorkLocation, CreateConversationTaskCommand,
     CreatedConversationRun, PreparedConversationTask, conversation_auto_title,
 };
+pub use self::failed_node_rerun::RunWriteAdmissionGuard;
 pub use self::notification::{
     INITIAL_DIRECT_TURN_ID, InterventionNotification, InterventionType, NotificationDedup,
     direct_conversation_agent_label, make_completion_dedup_key, make_dedup_key,
     make_dedup_key_with_suffix, make_turn_dedup_key, reason_key,
 };
-pub use self::orchestrator::{AcceptedRun, PreparedRun};
+pub use self::orchestrator::{AcceptedRun, PreparedRun, RetryCurrentNodeAccepted};
 pub use self::runtime_recovery::{
     RuntimeCandidateRegistration, RuntimeRecoveryCoordinator, RuntimeRecoveryError,
 };
@@ -32,8 +34,8 @@ pub use self::runtime_recovery::{
 use crate::acp::client as acp_client;
 use crate::acp::commands::AcpCommandItem;
 use crate::config::{
-    AppearancePreference, ConversationAutoConfig, DesktopAvailableUpdate, DesktopLanguage,
-    DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentId, McpServerConfig,
+    AcpAdapterConfig, AppearancePreference, ConversationAutoConfig, DesktopAvailableUpdate,
+    DesktopLanguage, DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentId, McpServerConfig,
     McpServerHealthResult, PersonalizationPreference, ProviderDiagnosticSnapshot, RuntimeConfig,
     RuntimeLogLevel, SettingsConfig, SkillMeta, SkillSource, StateConfig,
 };
@@ -46,10 +48,7 @@ use crate::dsl::{
     WorkflowDsl, WorkflowValidationError, validate_authoring_workflow, validate_workflow,
     validate_workflow_snapshot, workflow_contains_ai_dynamic,
 };
-use crate::dynamic::{
-    DynamicNodeStatus, DynamicRunPhase, DynamicRunStatus, dynamic_leaf_is_active,
-    refresh_dynamic_current_leaf_ids, write_dynamic_node_state,
-};
+use crate::dynamic::{dynamic_leaf_is_active, write_dynamic_node_state};
 use crate::dynamic_store::load_dynamic_graph;
 use crate::mcp::McpManager;
 use crate::process::recover_persisted_process_group;
@@ -97,12 +96,12 @@ use self::orchestrator::{
     prepare_run_in_worktree_at as orchestrator_prepare_run_in_worktree_at,
     prepare_run_with_authoring as orchestrator_prepare_run_with_authoring,
     reserve_manual_check_submission as orchestrator_reserve_manual_check_submission,
+    retry_current_node as orchestrator_retry_current_node,
     run_continue as orchestrator_run_continue,
     run_continue_background as orchestrator_run_continue_background,
     run_continue_with_prompt_input as orchestrator_run_continue_with_prompt_input,
     run_recover_completed_background as orchestrator_run_recover_completed_background,
-    run_retry as orchestrator_run_retry, run_start as orchestrator_run_start,
-    run_start_background as orchestrator_run_start_background,
+    run_start as orchestrator_run_start, run_start_background as orchestrator_run_start_background,
     submit_manual_check as orchestrator_submit_manual_check,
     submit_manual_check_background as orchestrator_submit_manual_check_background,
     validate_manual_check_submission as orchestrator_validate_manual_check_submission,
@@ -139,8 +138,8 @@ impl Drop for OwnedTaskDirectory {
 }
 use self::profiles::{
     DefaultProfileIds, create_profile, delete_profile as delete_profile_file,
-    ensure_default_user_profiles, import_profiles_from_folder, list_profiles, show_profile,
-    update_profile,
+    ensure_default_user_profiles, import_profiles_from_files, import_profiles_from_folder,
+    list_profiles, show_profile, update_profile,
 };
 
 const ATTEMPT_RUNTIME_STATE_LOCK_SHARDS: usize = 64;
@@ -156,7 +155,7 @@ pub(crate) fn attempt_runtime_state_lock(
 ) -> &'static Mutex<()> {
     let key = format!(
         "{}/{task_id}/{run_id}/{round_id}/{node_id}/{attempt_id}",
-        app.paths.repo_root
+        app.paths.runtime_root
     );
     let mut hasher = DefaultHasher::new();
     key.hash(&mut hasher);
@@ -173,8 +172,8 @@ pub(crate) fn attempt_runtime_state_lock(
 const STATE_CONFIG_LOCK_SHARDS: usize = 32;
 static STATE_CONFIG_LOCKS: OnceLock<Vec<Mutex<()>>> = OnceLock::new();
 pub use self::profiles::{
-    ImportProfilesInput, ImportProfilesResult, ProfileCommandError, ProfileEntry, ProfileInput,
-    ProfileList, ProfileScope,
+    ImportProfileFilesInput, ImportProfilesInput, ImportProfilesResult, ProfileCommandError,
+    ProfileEntry, ProfileInput, ProfileList, ProfileScope,
 };
 
 fn tail_text(text: &str, limit: usize) -> String {
@@ -284,7 +283,7 @@ fn default_workflow_template(
             label_key: "conversation.home.includeInterview".to_string(),
             default_enabled: true,
         }),
-        workflow: default_workflow_dsl("claude-acp", profiles, language),
+        workflow: default_workflow_dsl(profiles, language),
         model_bindings: WorkflowModelBindings::default(),
         created_at: now.clone(),
         updated_at: now,
@@ -305,7 +304,7 @@ fn default_lightweight_workflow_template(
             label_key: "conversation.home.includeGrill".to_string(),
             default_enabled: true,
         }),
-        workflow: default_lightweight_workflow_dsl("claude-acp", profiles, language),
+        workflow: default_lightweight_workflow_dsl(profiles, language),
         model_bindings: WorkflowModelBindings::default(),
         created_at: now.clone(),
         updated_at: now,
@@ -494,13 +493,8 @@ fn wb_cicd_workflow_template(
     template
 }
 
-fn default_workflow_dsl(
-    provider: &str,
-    profiles: &DefaultProfileIds,
-    language: DesktopLanguage,
-) -> WorkflowDsl {
+fn default_workflow_dsl(profiles: &DefaultProfileIds, language: DesktopLanguage) -> WorkflowDsl {
     fn worker(
-        _provider: &str,
         profiles: &DefaultProfileIds,
         id: &str,
         role_key: &str,
@@ -550,7 +544,6 @@ fn default_workflow_dsl(
         },
         nodes: vec![
             worker(
-                provider,
                 profiles,
                 "interview",
                 "interview",
@@ -559,7 +552,6 @@ fn default_workflow_dsl(
                 true,
             ),
             worker(
-                provider,
                 profiles,
                 "plan",
                 "plan",
@@ -568,7 +560,6 @@ fn default_workflow_dsl(
                 true,
             ),
             worker(
-                provider,
                 profiles,
                 "dev",
                 "dev",
@@ -577,7 +568,6 @@ fn default_workflow_dsl(
                 false,
             ),
             worker(
-                provider,
                 profiles,
                 "review",
                 "review",
@@ -586,7 +576,6 @@ fn default_workflow_dsl(
                 false,
             ),
             worker(
-                provider,
                 profiles,
                 "test",
                 "test",
@@ -595,7 +584,6 @@ fn default_workflow_dsl(
                 false,
             ),
             worker(
-                provider,
                 profiles,
                 "accept",
                 "accept",
@@ -604,7 +592,6 @@ fn default_workflow_dsl(
                 false,
             ),
             worker(
-                provider,
                 profiles,
                 "cleanup",
                 "cleanup",
@@ -689,12 +676,10 @@ fn default_workflow_dsl(
 }
 
 fn default_lightweight_workflow_dsl(
-    provider: &str,
     profiles: &DefaultProfileIds,
     language: DesktopLanguage,
 ) -> WorkflowDsl {
     fn worker(
-        _provider: &str,
         profiles: &DefaultProfileIds,
         id: &str,
         role_key: &str,
@@ -744,7 +729,6 @@ fn default_lightweight_workflow_dsl(
         },
         nodes: vec![
             worker(
-                provider,
                 profiles,
                 "grill",
                 "grill",
@@ -753,7 +737,6 @@ fn default_lightweight_workflow_dsl(
                 true,
             ),
             worker(
-                provider,
                 profiles,
                 "dev-test",
                 "dev-test",
@@ -762,7 +745,6 @@ fn default_lightweight_workflow_dsl(
                 false,
             ),
             worker(
-                provider,
                 profiles,
                 "accept",
                 "accept",
@@ -847,6 +829,7 @@ fn upsert_built_in_workflow_template(
         .position(|template| template.id == built_in.id)
     {
         let mut next = built_in;
+        next.created_at = templates[current_index].created_at.clone();
         let persisted = TaskAuthoringWorkflow {
             workflow: templates[current_index].workflow.clone(),
             model_bindings: templates[current_index].model_bindings.clone(),
@@ -858,6 +841,11 @@ fn upsert_built_in_workflow_template(
             Some(&persisted),
             Some(&next.id),
         )?;
+        if serde_json::to_value(&next.workflow)? == serde_json::to_value(&persisted.workflow)?
+            && next.model_bindings == persisted.model_bindings
+        {
+            next.updated_at = templates[current_index].updated_at.clone();
+        }
         templates[current_index] = next;
         if current_index != index {
             let template = templates.remove(current_index);
@@ -970,6 +958,8 @@ pub struct CreateTaskInput {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowTemplateStore {
+    #[serde(skip)]
+    pub storage_revision: crate::storage::configuration::FileRevision,
     pub version: String,
     #[serde(alias = "last_used_template_id")]
     pub last_used_template_id: Option<String>,
@@ -1451,7 +1441,8 @@ pub enum AcpPromptLifecycleEvent {
 }
 
 pub fn is_run_continuable(run: &RunState) -> bool {
-    run.status == RunStatus::Paused
+    !run.is_sealed()
+        && run.status == RunStatus::Paused
         && run.outcome.is_none()
         && matches!(
             run.pause_reason,
@@ -3364,7 +3355,7 @@ impl App {
     }
 
     pub fn save_settings(&self, settings: &SettingsConfig) -> Result<()> {
-        write_json(&self.paths.user_settings_file(), settings)
+        crate::storage::save_settings_file(&self.paths.user_settings_file(), settings).map(|_| ())
     }
 
     /// 读取全局 `state.json`（只读路径，任意调用）。
@@ -3404,11 +3395,18 @@ impl App {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        crate::provider::prompt_workspace_roots(
+        let mut roots = crate::provider::prompt_workspace_roots(
             &self.paths.project_id,
             session_root.as_std_path(),
             &registered,
-        )
+        );
+        if let Some(root) = roots
+            .iter_mut()
+            .find(|root| root.project_id == self.paths.project_id)
+        {
+            root.paths = Some(self.paths.clone());
+        }
+        roots
     }
 
     pub fn attempt_session_workspace_dir(
@@ -3607,15 +3605,28 @@ impl App {
         agent_id: ManagedAgentId,
         config: ManagedAgentConfig,
     ) -> Result<SettingsConfig> {
-        let mut agents = self.config.agents.clone();
-        agents.insert(agent_id, config);
-        self.set_user_agents(agents)
+        config.executable_adapter(&agent_id)?;
+        crate::storage::configuration::with_configuration(&self.paths.user_gold_band_dir(), || {
+            let mut settings = self.load_settings()?;
+            settings
+                .agents
+                .get_or_insert_with(|| self.config.agents.clone())
+                .insert(agent_id, config);
+            self.save_settings(&settings)?;
+            self.load_settings()
+        })
     }
 
     pub fn remove_managed_agent(&self, agent_id: &ManagedAgentId) -> Result<SettingsConfig> {
-        let mut agents = self.config.agents.clone();
-        agents.remove(agent_id);
-        self.set_user_agents(agents)
+        crate::storage::configuration::with_configuration(&self.paths.user_gold_band_dir(), || {
+            let mut settings = self.load_settings()?;
+            settings
+                .agents
+                .get_or_insert_with(|| self.config.agents.clone())
+                .remove(agent_id);
+            self.save_settings(&settings)?;
+            self.load_settings()
+        })
     }
 
     // ── MCP (委托给 McpManager，对标 Zed ContextServerStore) ──
@@ -3744,6 +3755,31 @@ impl App {
         self.load_workflow_template_store()
     }
 
+    /// Snapshot read for preview/application; never seeds, migrates or repairs templates.
+    pub fn read_workflow_templates(&self) -> Result<WorkflowTemplateStore> {
+        crate::storage::configuration::with_configuration(&self.paths.user_gold_band_dir(), || {
+            let path = self.paths.workflow_templates_file();
+            let mut store: WorkflowTemplateStore = read_json(&path)?;
+            store.storage_revision = crate::storage::configuration::revision(&path)?;
+            Ok(store)
+        })
+    }
+
+    pub fn initialize_workflow_templates(&self) -> Result<()> {
+        self.load_workflow_template_store().map(|_| ())
+    }
+
+    pub fn built_in_workflow_template_ids(&self) -> Vec<&'static str> {
+        let mut ids = vec![
+            DEFAULT_WORKFLOW_TEMPLATE_ID,
+            DEFAULT_LIGHTWEIGHT_WORKFLOW_TEMPLATE_ID,
+        ];
+        if crate::memory::is_wb() {
+            ids.push(WB_CICD_WORKFLOW_TEMPLATE_ID);
+        }
+        ids
+    }
+
     pub fn auto_templates(&self) -> Result<AutoTemplateStore> {
         self.load_auto_template_store()
     }
@@ -3765,6 +3801,13 @@ impl App {
         input: ImportProfilesInput,
     ) -> Result<ImportProfilesResult> {
         import_profiles_from_folder(&self.paths, input)
+    }
+
+    pub fn import_profiles_from_files(
+        &self,
+        input: ImportProfileFilesInput,
+    ) -> Result<ImportProfilesResult> {
+        import_profiles_from_files(&self.paths, input)
     }
 
     pub fn update_profile(&self, id: &str, input: ProfileInput) -> Result<ProfileEntry> {
@@ -3844,7 +3887,7 @@ impl App {
             updated_at: now,
         });
         store.last_used_template_id = Some(id);
-        self.save_workflow_template_store(&store)?;
+        self.save_workflow_template_store(&mut store)?;
         Ok(store)
     }
 
@@ -3917,7 +3960,7 @@ impl App {
         template.model_bindings = model_bindings;
         template.updated_at = now_rfc3339_like();
         store.last_used_template_id = Some(template_id.to_string());
-        self.save_workflow_template_store(&store)?;
+        self.save_workflow_template_store(&mut store)?;
         Ok(store)
     }
 
@@ -3958,7 +4001,7 @@ impl App {
         template.model_bindings = model_bindings;
         template.updated_at = now_rfc3339_like();
         store.last_used_template_id = Some(template_id.to_string());
-        self.save_workflow_template_store(&store)?;
+        self.save_workflow_template_store(&mut store)?;
         Ok(store)
     }
 
@@ -3986,7 +4029,7 @@ impl App {
         if store.last_used_template_id.as_deref() == Some(template_id) {
             store.last_used_template_id = Some("default".to_string());
         }
-        self.save_workflow_template_store(&store)?;
+        self.save_workflow_template_store(&mut store)?;
         Ok(store)
     }
 
@@ -4107,62 +4150,77 @@ impl App {
     }
 
     fn load_workflow_template_store(&self) -> Result<WorkflowTemplateStore> {
+        crate::storage::configuration::with_configuration(&self.paths.user_gold_band_dir(), || {
+            let (mut store, changed) = self.prepare_workflow_template_store_unlocked(true)?;
+            if changed {
+                self.save_workflow_template_store(&mut store)?;
+            }
+            Ok(store)
+        })
+    }
+
+    /// Returns the setup-time template projection without creating, migrating or
+    /// repairing files. The onboarding preview and apply paths share this snapshot.
+    pub fn prepared_workflow_templates(&self) -> Result<WorkflowTemplateStore> {
+        crate::storage::configuration::with_configuration(&self.paths.user_gold_band_dir(), || {
+            self.prepare_workflow_template_store_unlocked(false)
+                .map(|(store, _)| store)
+        })
+    }
+
+    fn prepare_workflow_template_store_unlocked(
+        &self,
+        track_changes: bool,
+    ) -> Result<(WorkflowTemplateStore, bool)> {
         let default_profiles = ensure_default_user_profiles(&self.paths)?;
         let default_template =
             default_workflow_template(&default_profiles, self.config.desktop_language);
         let lightweight_template =
             default_lightweight_workflow_template(&default_profiles, self.config.desktop_language);
         let path = self.paths.workflow_templates_file();
-        if !path.exists() {
-            let legacy_path = self.paths.legacy_project_workflow_templates_file();
-            if legacy_path.exists() {
-                if let Some(parent) = path.parent() {
-                    fs::create_dir_all(parent.as_std_path())?;
-                }
-                fs::copy(legacy_path.as_std_path(), path.as_std_path())?;
-            }
-        }
-        if path.exists() {
-            let mut store: WorkflowTemplateStore = read_json(&path)?;
-            for template in &mut store.templates {
-                migrate_authoring_workflow(
-                    &mut template.workflow,
-                    &mut template.model_bindings,
-                    template.is_built_in.then_some(template.id.as_str()),
-                )?;
-            }
-            upsert_built_in_workflow_template(&mut store.templates, lightweight_template, 0)?;
-            upsert_built_in_workflow_template(&mut store.templates, default_template, 0)?;
-            if crate::memory::is_wb() {
-                upsert_built_in_workflow_template(
-                    &mut store.templates,
-                    wb_cicd_workflow_template(&default_profiles, self.config.desktop_language),
-                    2,
-                )?;
-            } else {
-                store
-                    .templates
-                    .retain(|template| template.id != WB_CICD_WORKFLOW_TEMPLATE_ID);
-            }
-            if let Some(workflow) = store.last_created_workflow.as_mut() {
-                let mut ignored = WorkflowModelBindings::default();
-                migrate_authoring_workflow(workflow, &mut ignored, None)?;
-            }
-            self.save_workflow_template_store(&store)?;
-            return Ok(store);
-        }
-        let mut store = WorkflowTemplateStore {
-            version: VERSION.to_string(),
-            last_used_template_id: Some("default".to_string()),
-            last_created_workflow: None,
-            templates: vec![default_template, lightweight_template],
+        let legacy_path = self.paths.legacy_project_workflow_templates_file();
+        let source = if path.exists() {
+            Some(path.clone())
+        } else {
+            legacy_path.exists().then_some(legacy_path)
         };
-        if crate::memory::is_wb() {
-            store.templates.push(wb_cicd_workflow_template(
-                &default_profiles,
-                self.config.desktop_language,
-            ));
-        }
+        let needs_canonical_copy = source.as_ref().is_some_and(|source| source != &path);
+        let (mut store, created) = if let Some(source) = source {
+            (read_json::<WorkflowTemplateStore>(&source)?, false)
+        } else {
+            (
+                WorkflowTemplateStore {
+                    storage_revision: crate::storage::configuration::FileRevision::Missing,
+                    version: VERSION.to_string(),
+                    last_used_template_id: Some("default".to_string()),
+                    last_created_workflow: None,
+                    templates: vec![default_template.clone(), lightweight_template.clone()],
+                },
+                true,
+            )
+        };
+        store.storage_revision = crate::storage::configuration::revision(&path)?;
+        let before = track_changes
+            .then(|| serde_json::to_value(&store))
+            .transpose()?;
+        let previous_slots = store
+            .templates
+            .iter()
+            .map(|template| {
+                (
+                    template.id.clone(),
+                    template
+                        .workflow
+                        .nodes
+                        .iter()
+                        .filter_map(|node| match node {
+                            NodeDsl::Worker(worker) => worker.execution_slot_id.clone(),
+                            _ => None,
+                        })
+                        .collect::<std::collections::BTreeSet<_>>(),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
         for template in &mut store.templates {
             migrate_authoring_workflow(
                 &mut template.workflow,
@@ -4170,13 +4228,111 @@ impl App {
                 template.is_built_in.then_some(template.id.as_str()),
             )?;
         }
-        self.save_workflow_template_store(&store)?;
-        Ok(store)
+        upsert_built_in_workflow_template(&mut store.templates, lightweight_template, 0)?;
+        upsert_built_in_workflow_template(&mut store.templates, default_template, 0)?;
+        if crate::memory::is_wb() {
+            upsert_built_in_workflow_template(
+                &mut store.templates,
+                wb_cicd_workflow_template(&default_profiles, self.config.desktop_language),
+                2,
+            )?;
+        } else {
+            store
+                .templates
+                .retain(|template| template.id != WB_CICD_WORKFLOW_TEMPLATE_ID);
+        }
+        if let Some(workflow) = store.last_created_workflow.as_mut() {
+            let mut ignored = WorkflowModelBindings::default();
+            migrate_authoring_workflow(workflow, &mut ignored, None)?;
+        }
+        self.initialize_default_bindings(&mut store, &previous_slots);
+        let changed = track_changes
+            && (created
+                || needs_canonical_copy
+                || serde_json::to_value(&store)? != before.expect("tracked baseline"));
+        Ok((store, changed))
     }
 
-    fn save_workflow_template_store(&self, store: &WorkflowTemplateStore) -> Result<()> {
-        fs::create_dir_all(self.paths.user_context_dir().as_std_path())?;
-        write_json(&self.paths.workflow_templates_file(), store)
+    fn initialize_default_bindings(
+        &self,
+        store: &mut WorkflowTemplateStore,
+        prior: &std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    ) {
+        let Some(profile) = &self.config.default_execution_profile else {
+            return;
+        };
+        let ids = self.built_in_workflow_template_ids();
+        for template in &mut store.templates {
+            if !template.is_built_in || !ids.contains(&template.id.as_str()) {
+                continue;
+            }
+            let before = template.model_bindings.bindings.clone();
+            for slot in template
+                .workflow
+                .nodes
+                .iter()
+                .filter_map(|node| match node {
+                    NodeDsl::Worker(worker) => worker.execution_slot_id.as_ref(),
+                    _ => None,
+                })
+            {
+                if prior
+                    .get(&template.id)
+                    .is_some_and(|slots| slots.contains(slot))
+                {
+                    continue;
+                }
+                if let Some(binding) = template
+                    .model_bindings
+                    .bindings
+                    .iter_mut()
+                    .find(|binding| &binding.execution_slot_id == slot)
+                {
+                    binding.agent_id = profile.agent_id.as_str().into();
+                    binding.model_id = profile.model_selection.model_id().map(str::to_owned);
+                    binding.config_options = profile.config_options.clone();
+                    binding.model_bound_overrides = profile.model_bound_overrides.clone();
+                    binding.permission_mode_id = None;
+                    binding.auto_accept = false;
+                } else {
+                    template.model_bindings.bindings.push(
+                        crate::workflow_model_binding::WorkerModelBinding {
+                            execution_slot_id: slot.clone(),
+                            agent_id: profile.agent_id.as_str().into(),
+                            model_id: profile.model_selection.model_id().map(str::to_owned),
+                            config_options: profile.config_options.clone(),
+                            model_bound_overrides: profile.model_bound_overrides.clone(),
+                            permission_mode_id: None,
+                            auto_accept: false,
+                        },
+                    );
+                }
+            }
+            template
+                .model_bindings
+                .bindings
+                .sort_by(|left, right| left.execution_slot_id.cmp(&right.execution_slot_id));
+            if before != template.model_bindings.bindings {
+                template.model_bindings.binding_revision =
+                    template.model_bindings.binding_revision.saturating_add(1);
+            }
+        }
+    }
+
+    fn save_workflow_template_store(&self, store: &mut WorkflowTemplateStore) -> Result<()> {
+        let revision = crate::storage::configuration::with_configuration(
+            &self.paths.user_gold_band_dir(),
+            || {
+                crate::storage::configuration::verify_revision(
+                    &self.paths.workflow_templates_file(),
+                    &store.storage_revision,
+                )?;
+                write_json(&self.paths.workflow_templates_file(), store)?;
+                crate::storage::configuration::revision(&self.paths.workflow_templates_file())
+            },
+        )?;
+        store.storage_revision = revision;
+        Ok(())
     }
 
     pub fn task_authoring_workflow(&self, task_id: &str) -> Result<TaskAuthoringWorkflow> {
@@ -4272,7 +4428,7 @@ impl App {
         if let Some(template_id) = template_id.filter(|value| !value.trim().is_empty()) {
             store.last_used_template_id = Some(template_id);
         }
-        self.save_workflow_template_store(&store)
+        self.save_workflow_template_store(&mut store)
     }
 
     pub fn managed_agent(&self, provider: &str) -> Result<(ManagedAgentId, &ManagedAgentConfig)> {
@@ -4283,6 +4439,11 @@ impl App {
             .get(&agent_id)
             .ok_or_else(|| anyhow!("agent `{provider}` is not configured"))?;
         Ok((agent_id, config))
+    }
+
+    pub fn executable_agent_adapter(&self, provider: &str) -> Result<AcpAdapterConfig> {
+        let (agent_id, config) = self.managed_agent(provider)?;
+        config.executable_adapter(&agent_id)
     }
 
     pub fn provider_for_id(&self, provider: &str) -> Result<Arc<dyn ProviderAdapter>> {
@@ -4321,9 +4482,18 @@ impl App {
         deadline: acp_client::DoctorDeadline,
     ) -> Result<ProviderDoctorProbe> {
         let (agent_id, config) = self.managed_agent(provider)?;
+        let adapter = match config.executable_adapter(&agent_id) {
+            Ok(adapter) => adapter,
+            Err(err) => {
+                return Ok(ProviderDoctorProbe {
+                    doctor: DoctorResult::from_anyhow(&err),
+                    commands: Vec::new(),
+                });
+            }
+        };
         match acp_client::doctor_with_deadline(
             &agent_id,
-            &config.adapter,
+            &adapter,
             self.paths.repo_root.clone(),
             self.config.use_local_claude,
             self.config.require_local_claude_executable,
@@ -4352,7 +4522,7 @@ impl App {
         let (agent_id, config) = self.managed_agent(provider)?;
         acp_client::probe_model_config(
             &agent_id,
-            &config.adapter,
+            &config.executable_adapter(&agent_id)?,
             self.paths.repo_root.clone(),
             self.config.use_local_claude,
             self.config.require_local_claude_executable,
@@ -5102,7 +5272,7 @@ impl App {
             .paths
             .dynamic_graph_file(task_id, run_id, round_id, node_id, attempt_id);
         let Ok(state_lock) = dynamic_state_lock_for(
-            &self.paths.repo_root,
+            &self.paths.runtime_root,
             task_id,
             run_id,
             round_id,
@@ -5127,24 +5297,7 @@ impl App {
             })
             .collect::<Vec<_>>();
 
-        for dynamic_node in &mut graph.nodes {
-            if dynamic_node.status != DynamicNodeStatus::Completed {
-                dynamic_node.status = DynamicNodeStatus::Paused;
-                dynamic_node.outcome = None;
-                dynamic_node.pause_reason = Some(pause_reason);
-                dynamic_node.runtime_error = None;
-                let now = now_rfc3339_like();
-                dynamic_node.pause_runtime_execution(now.clone());
-                dynamic_node.finished_at = Some(now);
-            }
-        }
-
-        graph.run.status = DynamicRunStatus::Paused;
-        graph.run.phase = DynamicRunPhase::Executing;
-        graph.run.outcome = None;
-        graph.run.pause_reason = Some(pause_reason);
-        refresh_dynamic_current_leaf_ids(&mut graph);
-        graph.run.updated_at = now_rfc3339_like();
+        orchestrator::pause_dynamic_graph_runtime_state(&mut graph, pause_reason);
         let _ = write_json(&graph_path, &graph);
         let _ = write_json(
             &self
@@ -5198,6 +5351,27 @@ impl App {
     }
 
     pub fn run_pause(&self, task_id: &str, run_id: &str, reason: PauseReason) -> Result<RunState> {
+        self.run_pause_with_descendants(task_id, run_id, reason, true)
+    }
+
+    /// Commits this Run's stop fence. Bounded tree traversal owns descendant
+    /// discovery and cancellation separately, without recursive metadata reads.
+    pub(crate) fn pause_run_state(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        reason: PauseReason,
+    ) -> Result<RunState> {
+        self.run_pause_with_descendants(task_id, run_id, reason, false)
+    }
+
+    fn run_pause_with_descendants(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        reason: PauseReason,
+        interrupt_descendants: bool,
+    ) -> Result<RunState> {
         loop {
             let observed = self.run_status(task_id, run_id)?;
             if observed.status != RunStatus::Running {
@@ -5270,7 +5444,9 @@ impl App {
             }
             drop(guard);
 
-            self.interrupt_run_descendants_best_effort(task_id, run_id, &run, reason);
+            if interrupt_descendants {
+                self.interrupt_run_descendants_best_effort(task_id, run_id, &run, reason);
+            }
             self.publish_committed_attempt_pause(&run);
             self.finish_runtime_candidate_best_effort(
                 task_id,
@@ -5562,7 +5738,7 @@ impl App {
         attempt_id: &str,
     ) -> Result<bool> {
         dynamic_resume_target_is_active(
-            &self.paths.repo_root,
+            &self.paths.runtime_root,
             task_id,
             run_id,
             round_id,
@@ -5779,6 +5955,7 @@ impl App {
         prompt_id: Option<String>,
         continue_ref: Option<serde_json::Value>,
     ) -> Result<PreparedAcpPrompt> {
+        self.ensure_attempt_writable(task_id, run_id, round_id, node_id, attempt_id)?;
         let workflow = self::state_access::load_run_workflow(self, task_id, run_id)?;
         let validated = validate_workflow_snapshot(workflow)?;
         self.validate_workflow_agents(&validated)?;
@@ -5836,6 +6013,7 @@ impl App {
         prompt_id: Option<String>,
         continue_ref: Option<serde_json::Value>,
     ) -> Result<PreparedAcpPrompt> {
+        self.ensure_attempt_writable(task_id, run_id, round_id, outer_node_id, outer_attempt_id)?;
         prepare_dynamic_acp_prompt(
             self,
             task_id,
@@ -6102,8 +6280,22 @@ impl App {
         )
     }
 
-    pub fn run_retry(&self, task_id: &str, run_id: &str) -> Result<RunState> {
-        orchestrator_run_retry(self, task_id, run_id)
+    pub fn retry_current_node(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        expected_round_id: &str,
+        expected_node_id: &str,
+        expected_attempt_id: &str,
+    ) -> Result<RetryCurrentNodeAccepted> {
+        orchestrator_retry_current_node(
+            self,
+            task_id,
+            run_id,
+            expected_round_id,
+            expected_node_id,
+            expected_attempt_id,
+        )
     }
 
     pub fn run_start(
@@ -6562,9 +6754,9 @@ mod tests {
     use crate::acp::elicitation::{pending_elicitation_file, pending_elicitation_state};
     use crate::config::{
         AppearancePreference, ColorSchemePreference, DesktopLanguage, DesktopUpdateBadgeState,
-        FontSizePreference, FontStackPreference, MulticaCompletedTask, PersonalizationPreference,
-        ProviderDiagnosticSnapshot, RuntimeConfig, RuntimeLogLevel, StateConfig,
-        catalog_agent_default_config,
+        FontSizePreference, FontStackPreference, ManagedAgentId, MulticaCompletedTask,
+        PersonalizationPreference, ProviderDiagnosticSnapshot, RuntimeConfig, RuntimeLogLevel,
+        StateConfig, catalog_agent_default_config,
     };
     use crate::domain::{
         NodeOutcome, NodeType, PauseReason, RoundTrigger, RunOutcome, RunStatus, SessionMode,
@@ -6587,6 +6779,7 @@ mod tests {
     };
     use camino::Utf8PathBuf;
     use std::collections::BTreeMap;
+    use std::str::FromStr;
     use std::sync::{Arc, Mutex, mpsc};
     use std::time::Duration;
     use tempfile::tempdir;
@@ -6608,6 +6801,35 @@ mod tests {
         let app = App::with_config(repo_root, RuntimeConfig::default());
 
         assert!(!app.paths.project_manifest_file().exists());
+    }
+
+    #[test]
+    fn executable_agent_adapter_resolves_catalog_launch_consistently() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("workspace")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let agent_id = ManagedAgentId::from_str("codebuddy-code").unwrap();
+        let catalog_config = catalog_agent_default_config(agent_id.as_str()).unwrap();
+        let executable = temp.path().join("codebuddy.exe");
+        std::fs::write(&executable, "fixture").unwrap();
+        let mut config = RuntimeConfig::default();
+        config.agents.insert(agent_id.clone(), catalog_config);
+        config.agents.get_mut(&agent_id).unwrap().executable_path =
+            Some(executable.to_string_lossy().into_owned());
+        let app = App::with_config(repo_root, config);
+
+        let first = app.executable_agent_adapter(agent_id.as_str()).unwrap();
+        let second = app.executable_agent_adapter(agent_id.as_str()).unwrap();
+        let catalog_adapter = &app.managed_agent(agent_id.as_str()).unwrap().1.adapter;
+
+        assert_eq!(
+            std::path::Path::new(&first.command),
+            dunce::canonicalize(&executable).unwrap()
+        );
+        assert_ne!(first.command, catalog_adapter.command);
+        assert_eq!(second.command, first.command);
+        assert_eq!(second.args, first.args);
+        assert_eq!(second.env, first.env);
     }
 
     fn write_fixed_attempt_fixture(
@@ -6632,6 +6854,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: reason,
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -6645,7 +6868,14 @@ mod tests {
             outcome: None,
             trigger: RoundTrigger::Initial,
             started_at: "2026-08-10T00:00:00Z".to_string(),
-            trace: Vec::new(),
+            trace: vec![crate::runtime::RoundTraceStep {
+                sequence: 1,
+                node_id: "worker".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                from_node_id: None,
+                edge_outcome: None,
+                entered_at: "2026-08-10T00:00:00Z".to_string(),
+            }],
             uuid: None,
         };
         let node = NodeState {
@@ -7165,6 +7395,7 @@ mod tests {
             config.with_provider_diagnostics(std::collections::BTreeMap::from([(
                 provider.to_string(),
                 ProviderDiagnosticSnapshot {
+                    config_fingerprint: None,
                     available: true,
                     error: None,
                     checked_at: "2026-06-24T00:00:00Z".to_string(),
@@ -7404,6 +7635,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(reason),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -7441,6 +7673,7 @@ mod tests {
             &std::collections::BTreeMap::from([(
                 "claude-acp".to_string(),
                 ProviderDiagnosticSnapshot {
+                    config_fingerprint: None,
                     available: true,
                     error: None,
                     checked_at: "2026-06-24T00:00:00Z".to_string(),
@@ -7724,6 +7957,7 @@ mod tests {
             control: WorkflowControl::default(),
         };
         let store = WorkflowTemplateStore {
+            storage_revision: Default::default(),
             version: VERSION.to_string(),
             last_used_template_id: Some("custom".to_string()),
             last_created_workflow: Some(stale_workflow.clone()),
@@ -7798,6 +8032,28 @@ mod tests {
             unreachable!();
         };
         assert_eq!(model.as_deref(), Some("gpt-5.4"));
+    }
+
+    #[test]
+    fn workflow_template_seed_returns_the_written_revision_for_immediate_save() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap());
+
+        let mut store = app.workflow_templates().unwrap();
+        assert_eq!(
+            store.storage_revision,
+            crate::storage::configuration::revision(&app.paths.workflow_templates_file()).unwrap(),
+            "the seeded store must carry the revision written to disk"
+        );
+
+        store.last_used_template_id =
+            Some(super::DEFAULT_LIGHTWEIGHT_WORKFLOW_TEMPLATE_ID.to_string());
+        app.save_workflow_template_store(&mut store).unwrap();
+        assert_eq!(
+            store.storage_revision,
+            crate::storage::configuration::revision(&app.paths.workflow_templates_file()).unwrap(),
+            "every workflow template write must return the committed revision"
+        );
     }
 
     #[test]
@@ -8942,6 +9198,7 @@ mod tests {
                 new_rounds_opened: 0,
                 pause_reason: None,
                 uuid: None,
+                rerun: None,
                 last_executed_node: None,
                 worktree: None,
                 execution: crate::runtime::RuntimeExecutionState::new(
@@ -9459,6 +9716,7 @@ mod tests {
                 new_rounds_opened: 0,
                 pause_reason: None,
                 uuid: None,
+                rerun: None,
                 last_executed_node: None,
                 worktree: None,
                 execution: Default::default(),
@@ -9580,6 +9838,7 @@ mod tests {
                 new_rounds_opened: 0,
                 pause_reason: None,
                 uuid: None,
+                rerun: None,
                 last_executed_node: None,
                 worktree: None,
                 execution: Default::default(),
@@ -9904,7 +10163,7 @@ mod tests {
         let paths =
             crate::storage::GoldBandPaths::new(Utf8PathBuf::from("/tmp/interview-default-success"));
         let profiles = super::ensure_default_user_profiles(&paths).unwrap();
-        let workflow = super::default_workflow_dsl("claude-acp", &profiles, DesktopLanguage::ZhCn);
+        let workflow = super::default_workflow_dsl(&profiles, DesktopLanguage::ZhCn);
 
         let interview = workflow
             .nodes

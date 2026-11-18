@@ -44,8 +44,13 @@
 ## 4. 主题包与外观选择
 
 ### 4.1 选项
+
+面向用户的主题立意与设计理念文案（更新日志取材）统一维护在 `docs/gold-band/产品设计文档/product/theme-stories.md`；本清单只保留技术参数与行为契约。
+
 当前支持：
 - Gold Band：默认设计风格，采用类 OpenAI 的白/近黑编辑界面；浅色以纯白画布、墨黑主操作和青绿色焦点建立层级，深色以近黑画布、克制灰阶和同一青绿色焦点保持一致。
+- 画境（Vista，`builtin.vista`，原 builtin.mobius 经远山过渡更名）：两景主题，深浅各取一景且与 Logo 色系解耦（Logo 三色预留给未来品牌主题）。深色"雪峰之夜"——近黑画布 `#0f0e10` + 金杏主色 `#E8A54A`，铺黑金雪山星空壁纸；浅色"水彩长卷"——暖纸底 `#faf8f4` + 黛青主色 `#2F6157`（青黛颜料）、去饱和砖红 `#B0483F` danger、黛青灰 `#B6C2D8` 输入控件边框，铺纸墨水彩人物壁纸。会话页与设置页铺深浅壁纸，性能档自动关闭。主题不携带字体资产，排版继承全局 canonical 字体注册。
+- 春野（Meadow，`builtin.meadow`）：春意护眼主题，深浅双方案均为绿基调。浅色画布为"春芽绿纸" `#E4EEDF`（相对亮度 0.845，比纯白少约 15% 入眼光通量、G-B 差 15 的可感知嫩绿——护眼两项物理指标由测试固化在 0.80–0.86 亮度带与绿意下限），浮层卡片保持近白（`#F2F7EE`/`#F5F9F2`）维持清新层次、避免全表面染绿的油墨感；侧栏/标题栏为独立绿锚点 `#CFE2CD`（较画布低 ~0.11 亮度台阶，对标 WorkBuddy 的"近白内容 + 绿侧栏"结构，2026-11-16 同事对比反馈落地）；松绿主色 `#358050`。深色"春夜"为柔化松绿：底 `#202624`（表面低饱和偏中性）、嫩芽绿主色 `#7FC494`、亮白绿前景 `#E4EBE2`。全色板压制蓝光（链接保留唯一低饱和钢蓝）。代码与 Diff 使用更亮"纸面层"（浅 `#FDFEFC` / 深 `#303A36`）承载 Shiki 固定色板，diff 以低饱和 tint + 亮度阶梯 + 边条冗余编码。携带 `wallpapers` 能力（风筝 meadow-kite-light / 竹夜 meadow-bamboo-dark，2048×1280 WebP）、无字体资产、无质量档；全量 fg/bg 配对 WCAG AA、纸面亮度台阶与护眼亮度带由 `web/tests/meadow-theme.test.ts` 固化。
 - 技术中性：更克制的无彩工具风格，浅色与深色都只让业务状态使用彩色。
 - 明暗偏好独立为 `跟随系统 / 浅色 / 深色`；每个正式主题包必须同时提供浅色和深色，`跟随系统` 不跨主题包切换。
 
@@ -57,6 +62,7 @@
 - 视觉质量选择按 `themeId` 隔离记忆；切换到不声明该能力的主题时隐藏控件且不制造伪性能档。
 - 后端完成校验和原子持久化后返回 canonical `appearance + personalization`，前端以返回值收敛并应用根属性。
 - 主题包的状态 surface/border 等语义字段必须在主题 SDK、生成目录和 Rust 模型中保持一致；保存外观前使用的严格主题目录校验不得因后端遗漏正式字段而拒绝内置主题。
+- Windows 桌面端在默认线程栈、透明原生窗口及主题目录尚未初始化时，首次选择主题也必须完成校验、保存并即时生效；连续切换四个内置主题保持明暗偏好，未知主题仍返回结构化错误。
 - 会话行的悬浮操作区使用透明背景并参与行内 Flex 布局；标题按剩余空间截断，hover 与键盘 focus 共用展示规则，操作区不得覆盖标题或叠加不同于整行的色块。
 - 所有主题选择后立即预览，不需要重启。
 
@@ -73,7 +79,7 @@
 
 点击当前主题
   主题抽屉
-    [ Gold Band ] [ 技术中性 ]
+    [ Gold Band ] [ 画境 ] [ 春野 ] [ 技术中性 ]
 ```
 
 视觉规则：
@@ -82,6 +88,7 @@
 - 当前生效主题除轻量背景与边界外，还必须显示 `primary / primary-foreground` 配对的对勾状态胶囊；不能只依赖整张卡片边框让用户猜测选中项。
 - 所有主题都遵循同一布局层级，主题 token 只负责换色，不改变设置页结构。
 - 顶部 `通用 / 个性化 / 高级` 使用共享 shadcn Tabs 默认变体：tab track 必须使用 `secondary` surface，并以 `border` 语义的内描边与工作区分层；不得使用可能与浅色工作区同值的 `muted` 作为唯一背景。选中 tab 继续使用 `background` surface 与轻量阴影。该规则同时适用于项目中其他默认分段 Tabs，明确使用 `line` 或透明变体的场景除外。
+- 页签轨道固定在滚动容器之外（标题栏与滚动区之间的独立布局层），页面任意滚动位置均可直接切换 tab；轨道不参与滚动，滚动内容在结构上不可能渲染到轨道后方。
 - 每个选项自身拥有胶囊边界，或 Tabs 容器已经显式提供边界时，必须使用共享 `bare` 变体清除默认 track、padding 和 ring；不得仅用 `bg-transparent` 覆盖背景而遗留外层内描边。Agent 胶囊选择器与 Round 详情胶囊 Tabs 均遵循该规则。
 - 文本选区由独立的 `text-selection` / `text-selection-foreground` 主题 token 管理，普通文本、Markdown、输入框和 composer 必须共享同一规则。两套深色使用可辨识的中灰选区与白色文字，不得继续复用与内容面接近的中性 `primary/30`；基础 Input 不再设置局部 selection 覆盖。
 - Gold Band 遵循中性面优先：大面积背景使用纯白与 `#fafafa / #f5f5f5` 建立层级，墨黑承担主操作，OpenAI Teal 只用于焦点、成功路径和少量强调；边框使用 `#e5e5e5` 发丝线，不用彩色边界给整窗染色。
@@ -109,7 +116,8 @@
 - 生成 CSS 中跨主题的 `@font-face` 必须通过 `runtimeFamily + weightMin/weightMax + style + coverage` 形成不会竞争的匹配身份，不能让同一匹配键指向多个主题 URL。Variable Font 必须以资产元数据范围内的连续区间注册，不能把同一 variable 文件重复伪装成 400/500/600/700 静态 face。主题切换和自定义字体栈只把已保存的作者 family 投影为当前主题 runtime family，不改写用户数据；浏览器只允许请求当前主题实际命中的字体资源。
 - 点击未选字体会追加到栈末尾；点击已选字体或删除按钮会取消；已选项显示从 1 开始的优先级，并可通过上移/下移调整。清空最后一项后必须写回 `source: theme`，不保存空的 custom 栈。
 - 自定义栈最多 16 项，family 去除首尾空白后按大小写不敏感去重；空值、超过 128 个 Unicode 字符及包含 `, ; { }` 的 family 无效。保存接口重新校验并返回 canonical 顺序。
-- UI 基准字号允许 `12–18px`；编辑器字号允许 `10–18px`，步长均为 `1px`。输入时只更新根级 CSS 变量进行即时预览，失焦后保存 `source: custom`；点击恢复时保存 `source: theme` 并立即展示当前主题预设，内置主题的明暗方案默认 UI 为 `14px`、编辑器为 `13px`，已有自定义字号（包括 `12px`）不变；禁止把恢复操作写成固定字号、使用浏览器 zoom 或新增 localStorage 旁路。
+- UI 基准字号允许 `12–18px`；编辑器字号允许 `10–18px`，步长均为 `1px`。输入时只更新根级 CSS 变量进行即时预览，失焦后保存 `source: custom`；点击恢复时保存 `source: theme` 并立即展示当前主题预设，内置主题的明暗方案默认 UI 为 `14px`、编辑器为 `13px`，已有自定义字号（包括 `12px`）不变；禁止把恢复操作写成固定字号或新增 localStorage 旁路。
+- 「界面缩放」是外观区的独立设置行：整窗等比缩放客户端界面，范围为 `50%–250%`、默认 `100%`。控件为数字输入 + shadcn `Slider` + 恢复默认按钮：滑杆按 `5%` 步进（拖动即时预览、`onValueCommit` 提交保存）并双向同步输入框；输入框支持手动输入任意整数——非数字输入显示「非法」提示且不改变当前缩放，数值越界（<50 / >250）按就近边界钳制并同步滑杆，手动输入的精确整数不做步进吸附。缩放值持久化在 `PersonalizationPreference.interfaceZoomPercent`，由桌面端通过 Tauri `WebviewWindow::set_zoom` 应用到主窗口 webview（应用启动时按已保存值应用，保存偏好在同一命令内生效）；`Ctrl+滚轮`、`Ctrl+加/减` 与 `Ctrl+0` 快捷键被应用接管为同一步进/重置入口——原生浏览器缩放手势始终被拦截，缩放唯一事实源是持久化偏好，内置浏览器子 WebView 不在此设置范围内。
 - UI 字号控制侧栏、设置页、聊天正文、Thought 与普通 Markdown，并通过派生 token 覆盖紧凑说明、徽标和时间等层级；聊天行内代码与代码块只切换等宽字形，字号继续从 UI 基准派生。
 - 编辑器字体和字号只覆盖所有 CodeMirror 文件查看/编辑、运行产物、Markdown 编辑器以及 Git/本轮 Diff；技术标识使用等宽字体不等同于消费编辑器字号。
 - 全局字重语义采用 variable font 轻量轴映射：正文 `330`、常规强调 `380`、标题/强强调 `450`、最高强调 `520`；Inter face 暴露字体原生连续轴，MiSans face 暴露 `250–520` 连续轴，确保四档值命中真实字形而不是吸附到静态 400/500/600。最高中文视觉层级不超过 Semibold。保留视觉层次，不按页面机械替换字重类，也不通过透明度或错配字体文件伪造较细字重。
@@ -125,7 +133,7 @@
 
 ### 6.1 数据与领域边界
 
-- 壁纸选择属于用户级个性化偏好。`PersonalizationPreference` 使用 `schemaVersion = 4`，以 `wallpaper.byColorScheme.light / dark = { image, opacityPercent }` 分别表达浅色与深色的权威壁纸来源和可见度。settings schema v10 将 v3 的单壁纸一次性复制到两种模式，不双读旧结构，避免升级后视觉突变。
+- 壁纸选择属于用户级个性化偏好。`PersonalizationPreference` 使用 `schemaVersion = 4`，以 `wallpaper.byColorScheme.light / dark = { image, opacityPercent }` 分别表达浅色与深色的权威壁纸来源和可见度。`image.source` 为三值来源：`theme`（继承主题默认槽位指派，可选 `assetId` 钉选主题声明的某张壁纸）、`user`（导入资产）、`none`（显式无壁纸，surface 回退主题纯色底）。settings schema v10 将 v3 的单壁纸一次性复制到两种模式，不双读旧结构，避免升级后视觉突变。
 - 壁纸资产仓库只保存全局共享的最近使用记录，不保存第二份 selected 状态；`WallpaperPreferencesVm` 也只投影资产列表。浅色、深色当前选择分别由 personalization 中的稳定 `assetId` 决定；仓库按最近使用顺序最多保留 10 张，达到上限时优先保留浅色、深色仍在引用的资产并淘汰最旧的未引用资产，恢复任一模式的主题壁纸不删除历史。
 - 导入支持 PNG、JPEG、WebP；源文件不超过 32 MiB，宽高均不超过 4096px，总像素不超过 1600 万。完整图规范化为 JPEG/WebP 且不超过约 4 MiB，并生成 320×180 WebP 缩略图。通过容量约束后的最终规范化像素图是资产派生的唯一事实源，完整图与缩略图分别由它编码，不从已编码的完整图回读再派生缩略图。
 - 壁纸图片资源的 `loading / ready / failed` 生命周期属于 Theme Runtime，不属于单个页面 surface。运行时按 URL 全局去重，并只保留当前主题有效槽与浅色/深色当前选中用户壁纸引用的有界集合；页面 surface 只管理 descriptor 投影、裁剪、透明度和遮罩。
@@ -135,6 +143,8 @@
 ### 6.2 行为
 
 - 用户壁纸跨主题生效，但按 resolved `light / dark` 隔离：切换主题时继续使用当前明暗模式的用户壁纸，切换明暗模式时切换到对应配置；`system` 始终以系统当前实际模式解析。恢复操作只把指定模式的来源切回 `theme`，该主题模式没有壁纸时显示普通主题底色。
+- `none` 是显式、持久的用户状态：运行时不回退主题壁纸，全部槽位清空并显示主题纯色底；按明暗模式独立设置，重启与主题切换后保持。空字符串钉选在保存归一化中收敛为 `theme` 默认指派。
+- 主题壁纸钉选（`theme + assetId`）只替换图片，fit / position / overlay 等槽位样式仍取当前主题描述符。钉选必须引用当前主题在当前明暗方案槽位中声明的壁纸资产，后端保存前校验；切换主题时钉选在同一保存事务中归一化为默认指派，不跨主题携带，用户壁纸与 `none` 不受影响。
 - 用户壁纸固定使用 CSS `cover / center / no-repeat`，由浏览器随 surface 尺寸自适应，不新增 ResizeObserver、窗口尺寸 React state 或重新生成图片。
 - surface 挂载时在首次绘制前执行幂等协调：descriptor 未变时不触碰已投影样式；URL 已 ready 时同步应用；URL 真正变化时保留当前投影到新资源成功后原子替换；失败只清理目标 surface。不得在页面切换刷新中先全局删除壁纸 CSS 变量再等待异步 `onload`。
 - `app / conversation / workspace / settings` 四类既有 wallpaper surface 统一消费同一用户壁纸投影。会话运行页必须标记 `conversation` surface；聊天 timeline 与包住 Composer 的整宽 sticky footer 使用透明承载层，prompt-kit Composer 及附着的任务/队列面板继续使用不透明主题卡片保持输入可读性；只允许控件本身的实色边界，不允许全宽 footer 在控件左右继续盖住 wallpaper surface。
@@ -146,7 +156,9 @@
 
 - 壁纸设置位于字体与头像之间。区域顶部使用共享 shadcn Tabs 切换“浅色 / 深色”，首次打开默认定位当前 resolved mode，各 Tab 的导入、最近选择、恢复与可见度只写入自身模式。主预览固定为 256×144 上限的 16:9 小卡片，不随宽内容区无限放大；有图片时显示来源标签，当前主题无图片时显示紧凑空状态。
 - 点击预览卡使用共享 shadcn/ui Dialog 放大并完整 `contain` 展示；点击放大图片、遮罩或关闭动作均回到小卡片，键盘焦点与 Escape 关闭由 Dialog 管理。
-- “选择壁纸”使用共享 Popover：最近使用以两列 16:9 缩略图展示并懒加载，底部提供导入入口；当前使用项有明确选中态。恢复主题壁纸为相邻的次级动作。
+- “选择壁纸”使用共享 Popover，按 Windows 壁纸心智分四段：顶部“无壁纸”整行选项；当前主题声明壁纸时展示“主题壁纸”段，以两列 16:9 缩略图懒加载当前主题在该明暗方案槽位中声明的去重资产；随后“最近使用”段以两列缩略图展示；底部提供导入入口。当前使用项有明确选中态，主题默认指派以设置槽位资产为代表性选中标记。
+- 壁纸来源是显式三态分段单选：主题壁纸 / 自定义 / 禁用。当前主题未声明壁纸时“主题壁纸”段置灰并显示“当前主题未提供壁纸”，`theme` 来源在该主题下不可持有；切换主题时若目标主题无壁纸能力，后端在同一保存事务中将 `theme` 来源塌缩为 `none`（用户自定义来源不受影响）。选择“自定义”打开选择器引导选图，未选图关闭不改变状态；点击已选中的“主题壁纸/自定义”段再次打开选择器换图（自定义段带下拉箭头提示），选择器内点主题图自动切到主题来源、点最近图自动切到自定义来源。选择器不再包含独立的“选择壁纸”按钮。
+- 自定义壁纸额外提供“显示方式”切换：`填充`（cover，裁切铺满，默认）与 `适应`（contain，完整显示、以主题背景色留边），按明暗模式独立保存；浅色/深色、任意窗口尺寸与界面缩放下均由浏览器自适应，不重新生成图片。
 - 可见度 Slider 仅在用户壁纸生效时展示，数值实时显示整数百分比。
 
 ---
@@ -185,9 +197,9 @@
 ## 8. Tauri 2.x MVP 对应实现
 
 - 外观权威字段改为 `appearance`：`schemaVersion = 2`、稳定 `themeId`、`colorScheme = system | light | dark`、按主题隔离的 `visualQualityByTheme`。旧 `desktopTheme` 在 settings schema v5 一次性迁移后删除，不双写。
-- 个性化权威字段为 `personalization`：`schemaVersion = 4`，显式保存两套有序字体栈、字号、按明暗模式隔离的壁纸来源/可见度以及 Agent / 个人头像图片与形状的 `source`。settings schema v8 破坏式删除 v1 单字体字段；settings schema v9 增加单壁纸；settings schema v10 将它一次性升级为 light/dark 两份配置，不保留双读。主题来源持续跟随当前主题，用户资产历史全局共享。
-- 内置 `builtin.gold-band`、`builtin.tech-neutral` 分别位于独立 `themes/*` 声明式包目录，共用 DTCG token、manifest/recipe/preset、Style Dictionary alias 解析、JSON Schema/Ajv 与 Zod/Rust 双端契约；构建产出的 Catalog、CSS recipe 和 asset manifest 是 Web 与 Tauri 的共同输入，业务组件不得读取具体主题 ID。主题 Catalog、Schema、主题包 `dist` 文本产物、Web generated catalog/CSS 与 Agent SVG 图标在仓库层固定为 LF 文本；`.gitattributes` 的精确路径规则优先于本机 `core.autocrlf`，避免生成脚本重写相同内容后在 Windows Changes 中反复出现假变更。
-- 设置页先选择设计风格主题包，再选择明暗模式；`system` 只解析当前主题包内的 light/dark。当前两个内置主题均不声明视觉质量能力，因此不显示质量档控件。
+- 个性化权威字段为 `personalization`：`schemaVersion = 5`，显式保存两套有序字体栈、字号、按明暗模式隔离的壁纸来源/可见度、Agent / 个人头像图片与形状的 `source`、界面缩放 `interfaceZoomPercent`（50–250，默认 100）以及工作流图布局方向 `workflowGraphDirection`（`auto | horizontal | vertical`，默认 `auto`）。v4 及更早文件在加载时由 `normalized()` 升级并补默认值，不保留双读。settings schema v8 破坏式删除 v1 单字体字段；settings schema v9 增加单壁纸；settings schema v10 将它一次性升级为 light/dark 两份配置，不保留双读。主题来源持续跟随当前主题，用户资产历史全局共享。
+- 内置 `builtin.gold-band`、`builtin.vista`、`builtin.meadow`、`builtin.tech-neutral` 分别位于独立 `themes/*` 声明式包目录，共用 DTCG token、manifest/recipe/preset、Style Dictionary alias 解析、JSON Schema/Ajv 与 Zod/Rust 双端契约；构建产出的 Catalog、CSS recipe 和 asset manifest 是 Web 与 Tauri 的共同输入，业务组件不得读取具体主题 ID。主题 Catalog、Schema、主题包 `dist` 文本产物、Web generated catalog/CSS 与 Agent SVG 图标在仓库层固定为 LF 文本；`.gitattributes` 的精确路径规则优先于本机 `core.autocrlf`，避免生成脚本重写相同内容后在 Windows Changes 中反复出现假变更。
+- 设置页先选择设计风格主题包，再选择明暗模式；`system` 只解析当前主题包内的 light/dark。`builtin.vista` 声明 `wallpapers` 与 `visual-quality-profiles` 能力，会话页与设置页铺画境两景壁纸，质量档可一键关闭壁纸；`builtin.gold-band`（温馨学习角/星空）与 `builtin.meadow`（风筝/竹夜）声明 `wallpapers` 但不声明质量能力；技术中性保持纯色，不声明壁纸能力。
 - 主题运行时只更新根 `data-theme / data-color-scheme / data-visual-quality / data-material-model`、封闭 CSS variables 与原生窗口安全底色，不请求会话、不重建 timeline 或编辑器。
 - 共享 shadcn/ui、prompt-kit 与应用壳以稳定 `data-theme-role` 消费材质 recipe；主题卡在宽内容区三列，窄窗口自动单列。
 - Theme Contract v2 将 shape、elevation、motion、scrollbar、完整组件状态 recipe、字体资源、语义图标槽和四类壁纸 surface 纳入同一封闭契约。设置页提供用户壁纸覆盖入口，但不改变主题包声明；“默认字体”显示当前主题 stack 的本地化 `displayName`，语言不参与 family 解析。
@@ -206,6 +218,10 @@
 - 2026-08-14 测试节点复验：Theme SDK 构建正例及缺失 token、alias 循环、非法 recipe、质量档越界负例通过；Web、Rust Catalog、旧外观迁移、偏好持久化与个性化迁移定向用例覆盖当前主题契约。
 - 2026-08-14 覆盖率工具链收敛：与 Vitest 同版本的 V8 coverage provider 作为固定开发依赖随 lockfile 安装，并提供统一 `web:test:coverage` 入口；后续测试节点不再临时修改依赖树，覆盖率结果仍必须以该节点实际执行为准。
 - 2026-08-14 内置主题收敛：删除 `builtin.glass` 与 `builtin.neo-brutalist` 的源包、运行时产物和选择入口，Catalog 只保留 Gold Band 与技术中性。退役或未知 `themeId` 由现有 resolver 统一规范化为 Gold Band，并清理不再受支持的质量档记录，不增加兼容主题或业务组件特判。
+- 2026-11-10 新增第三套内置主题 `builtin.mobius`（莫比乌斯）：以 Logo 莫比乌斯环带三色（朱红 `#CC332B`、藏蓝 `#244892`、杏橙 `#E99D54`）为基准的品牌主题，深色近黑底 + 杏橙主色、浅色暖纸底 + 藏蓝主色，深浅各铺一张对称的莫比乌斯环带壁纸（`conversation` + `settings` 槽位；一根连续缎带，朱红/藏蓝带端渐变衔接、中心交叉上压下穿插并带投影、两环开口内侧杏橙月牙衬底），性能档禁用壁纸。主题不声明 `fonts` 能力，排版复用 gold-band 全局注册的 canonical 字体族，不重复打包字体资产；壁纸由 `scripts/generate-mobius-wallpapers.mjs` 零依赖光栅化生成。
+- 2026-11-11 壁纸来源模型补全为 `theme（含可选 assetId 钉选）/ user / none` 三值：`none` 允许用户显式关闭主题壁纸、按明暗模式独立回到纯色底；主题壁纸钉选让用户在当前主题为该明暗方案声明的壁纸集合内选图，槽位样式仍归主题描述符，切换主题时钉选归一化。选择器改为“无壁纸 / 主题壁纸 / 最近使用 / 导入”四段式，新增 `clear_desktop_wallpaper` 与 `select_theme_desktop_wallpaper` 命令，钉选合法性由后端按当前主题槽位声明校验。
+- 2026-11-11 壁纸开关升级为一级动作：设置区按钮行恒定为“选择壁纸 + 状态切换钮”（`none` 态显示“恢复主题壁纸”、其余显示“无壁纸”），不再随状态增减按钮；Popover 内保留完整四段选择。同日新增第四套内置主题 `builtin.sage`（鼠尾草）：低饱和灰绿护眼主题，浅色豆沙绿 / 深色鼠尾草夜双方案，代码与 Diff 采用更亮“纸面层”承载 Shiki 固定色板，全量 fg/bg 配对 WCAG AA 以 `web/tests/sage-theme.test.ts` 固化；同批将 mobius 浅色输入控件边框从中性暖灰 `#c9c2b6` 修正为藏蓝灰 `#B6C2D8`，消除暖纸底上“选择 Agent 等输入框仍是灰色”的失配。
+- 2026-11-11 第三批交互重塑：① 第四套主题按“深浅皆绿、春意柔和”方向重塑，参照“有风”式清新取向定稿为 `builtin.meadow`（春野 / Meadow，历经 sage → verdant → meadow 三次命名与配色迭代）：浅色近白微绿画布 + 松绿 accent、深色柔化松绿 + 亮白绿前景，AA 与纸面亮度台阶由 `web/tests/meadow-theme.test.ts` 固化。② 壁纸来源改为显式三态分段单选（主题壁纸 / 自定义 / 禁用）：无壁纸主题“主题壁纸”段置灰、切换主题时 `theme` 来源塌缩为 `none`，点击已选中段换图、独立“选择壁纸”按钮移除（`choose` 文案键删除），`none` 文案为“禁用主题壁纸”。③ 自定义壁纸新增“显示方式”（填充 cover / 适应 contain）按明暗独立保存。④ 设置页 tab 轨道吸顶（不透明底 + 分隔线，修复透字）。⑤ 界面缩放滑块改为本地跟手 + 松手生效：拖动只更新滑块与数值，`onValueCommit` 才应用并持久化缩放。
 
 MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri command `save_desktop_preferences` 保存用户偏好。
 
@@ -325,3 +341,4 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 
 - 「高级」页的“待发送”分组提供「立即发送前确认打断当前回复」开关，默认开启。开启时，会话回复进行中点击待发送队列的“立即发送”会先弹确认框；关闭后直接打断并发送。确认框中的“后续不再提示”与该开关写入同一偏好。
 - 偏好保存在用户级设置的 `confirmQueuedPromptInterrupt`，后端是唯一事实源；前端以单一 store 懒加载一次，写入以最后一次请求为准，加载完成前按默认值（确认）处理，避免慢加载跳过确认。
+- 2026-11-16 主题壁纸接入与画境更名：① \`builtin.mobius\`（莫比乌斯）更名为 \`builtin.vista\`（画境 / Vista，历经 highland 远山过渡命名），配色从 Logo 三色迁移为远山两景锚点（浅色黛青 \`#2F6157\` 主色 + 砖红 \`#B0483F\` danger、深色金杏 \`#E8A54A\`），Logo 藏蓝/朱红/杏橙预留给未来品牌主题；壁纸替换为黑金雪山（深）与纸墨水彩（浅）。② 六张新壁纸以规范命名接入：Gold Band（goldband-study-light / goldband-stargaze-dark）、春野（meadow-kite-light / meadow-bamboo-dark）、画境（vista-inkwash-light / vista-summit-dark），全部 2048×1280 WebP；三主题新增 \`wallpapers\` 能力，技术中性保持纯色。③ 源图为 AIGC JPEG 伪装 .png，经 Rust image 管线（Lanczos3 缩放 + WebP 编码）规范化转换。

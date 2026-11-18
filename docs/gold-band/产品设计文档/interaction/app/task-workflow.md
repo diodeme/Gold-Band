@@ -142,7 +142,8 @@
 - AI 输出验证由输出产物 key、简化 JSON 输出约束和成功表达式组成；新建节点不会自动填写 schema/expression，输入项旁的问号说明统一使用圆形问号 icon + 随主题变化的浅色 shadcn/ui `Tooltip` 指导用户填写，悬浮或聚焦即可出现；profile 标签旁帮助也使用同一问号入口。原本带明确语义的其他说明 icon（如 profile summary）保持原语义；schema 输出不合法时 runtime 会同 attempt 隐藏追问修复，隐藏追问最多 3 次。声明 JSON 输出的 worker 只有在最近 assistant 输出中提取到可解析 JSON 时才允许落盘 canonical artifact，不得把普通自然语言回复 fallback 成 `.json` 产物；进入隐藏修复前必须清理本轮非法 output artifact，避免修复中断后产物列表展示旧的无效产物。
 - JSON 输出约束输入框不在输入过程中自动格式化；输入停止约 2 秒或失焦后再做 JSON 格式判断并写入 DSL。输入框右上角提供悬浮美化按钮，用户主动点击时才格式化当前 JSON 文本。
 - 成功表达式采用受限 JSONPath-like 形式，例如 `$.result == true`、`$.result=="true"`，支持多级路径和数组下标（如 `$.xx.yy[0].zz`）；保存时校验表达式路径必须存在于 JSON 输出约束中。
-- 作者态画布允许编辑过程中临时存在多条同类型出边，便于先拖拽连线再修改边类型；持久化 workflow 时校验同一来源节点的同一结果类型只能有一条出边，并校验 failure 边的来源节点必须已开启 AI 输出验证或人工 check。仅当节点同时关闭这两种结果判定方式时，才同步移除该节点既有的 failure 边；在两种判定方式之间切换时保留同一 outcome 控制语义。创建任务 Sheet 标题栏的保存任务按钮与模板保存/另存按钮都会触发创建态校验，任务详情编辑抽屉的保存工作流按钮触发任务 workflow 校验。作者态与运行态统一使用 ELK layered（elkjs，在 Web Worker 中按需加载）完成节点排布、正交连线和内联边标签：success 主链与运行 sequence 作为模型顺序，failure / 回退边视为环并允许折返；节点入口锚点与主出口（success）锚点同高，使 success 主链保持在同一行。`$new-round` 固定在入口节点正下方的首列，入边从其右侧进入，保证大图首屏即可看到会开启新 Round；只有一个重启节点时在 `$new-round` 上显示“新 Round · 从 {节点}”，多个时改在各条边标签上显示。运行态 AI-DYNAMIC 节点按后端 `GraphVm.groups` 的 group 包含关系绘制嵌套分组框。布局只由拓扑、尺寸、端口、标签宽度和分组组成的 spec 决定，状态、遍历次数等运行期变化不触发重新布局；布局异步 latest-wins，新布局完成前保留上一版画面，首次布局完成前节点隐藏并在画布显示加载状态，失败时展示错误而不是回退到另一套布局。初次适配视图基于布局边界计算；图在最小缩放下仍放不下时，保持入口一侧可见。
+- 作者态画布允许编辑过程中临时存在多条同类型出边，便于先拖拽连线再修改边类型；持久化 workflow 时校验同一来源节点的同一结果类型只能有一条出边，并校验 failure 边的来源节点必须已开启 AI 输出验证或人工 check。仅当节点同时关闭这两种结果判定方式时，才同步移除该节点既有的 failure 边；在两种判定方式之间切换时保留同一 outcome 控制语义。创建任务 Sheet 标题栏的保存任务按钮与模板保存/另存按钮都会触发创建态校验，任务详情编辑抽屉的保存工作流按钮触发任务 workflow 校验。作者态与运行态统一使用 ELK layered（elkjs，在 Web Worker 中按需加载）完成节点排布、正交连线和内联边标签：success 主链与运行 sequence 作为模型顺序，failure / 回退边视为环并允许折返；节点入口锚点与主出口（success）锚点同高，使 success 主链保持在同一行。`$new-round` 固定在入口节点正下方的首列，入边从其右侧进入，保证大图首屏即可看到会开启新 Round；只有一个重启节点时在 `$new-round` 上显示“新 Round · 从 {节点}”，多个时改在各条边标签上显示。运行态 AI-DYNAMIC 节点按后端 `GraphVm.groups` 的 group 包含关系绘制嵌套分组框。布局只由拓扑、尺寸、端口、标签宽度、分组和方向组成的 spec 决定，状态、遍历次数等运行期变化不触发重新布局；布局异步 latest-wins，新布局完成前保留上一版画面，首次布局完成前节点隐藏并在画布显示加载状态，失败时展示错误而不是回退到另一套布局。初次适配视图基于布局边界计算；图在最小缩放下仍放不下时，保持入口一侧可见。
+- 布局方向（2026-11-01）：spec 携带 `direction: RIGHT | DOWN`，作者态编辑器与运行态图共用同一方向模型。用户偏好持久化在 `PersonalizationPreference.workflowGraphDirection`（`auto | horizontal | vertical`，默认 `auto`），GraphControls 按钮组提供三选一切换并即时保存；`auto` 按画布容器宽高比选择方向（宽≥高为横向），带 ±0.1 迟滞避免拖拽面板穿越 1:1 时反复重排。`DOWN` 方向是 `RIGHT` 的完整镜像：ELK `elk.direction: DOWN`，节点端口 NORTH/SOUTH（success/failure 出口沿宽度按 34%/66% 分布），success 主链保持同一列，`$new-round` 钉在首层入口右侧、回退边从其南侧进入；fitView 在放不下时保持入口一侧（横向为左侧、纵向为顶部）可见。方向翻转属于新布局：布局缓存按 spec（含方向）区分，编辑器的既有视口在方向翻转后重新适配一次。运行态图缩放上限与作者态统一为 `1.4`；运行态图提供全屏查看入口（GraphControls 全屏按钮 + 全屏 Dialog 承载同一 GraphView，Esc/关闭按钮退出，节点点击打开会话时自动关闭全屏再导航）。2026-11-03 调整：作者态编辑器同样提供全屏——但不复用运行态的 Dialog 方案（编辑器是有状态工作面，嵌套第二个编辑器实例会复制状态）；改为承载整个编辑器容器，画布工具栏、节点面板与草稿随行进入全屏，GraphControls 按钮在全屏中切换为「退出全屏」文案。2026-11-04 调整：全屏承载从元素级 Fullscreen API 改为视口级应用内覆盖层（编辑器容器提升为 `fixed inset-0` 不透明主题面，脱离文档流但不搬运 DOM）——WebKitGTK 会把元素全屏映射为窗口管理器级的窗口状态切换，合成器过渡会在任务栏区域闪白并卡顿，而 Windows WebView2 上元素全屏本就只铺满 webview、两端行为不一致；覆盖层两端行为一致且不涉及窗口状态切换。会话工作台中编辑器作为右侧工作区面板的资源挂载（RightWorkspaceDock 渲染），覆盖层困在该面板的 z-10 层叠上下文内（中央会话面板与分隔条是其上层叠兄弟），全屏期间通过文档根标记把右侧工作区面板整体提升到壳层兄弟之上；覆盖层铺满工作台主区域并**让出左侧导航栏与标题栏**——左侧面板实时宽度与面板组顶部偏移以 CSS 变量（`--workspace-left-panel-width`、`--workspace-top-offset`，仅会话壳挂载期间存在）发布，覆盖层左缘从侧边栏右缘开始、顶缘从标题栏下缘开始（WebKit 会把嵌在面板树内的 fixed 元素裁剪到面板组盒子，不越过该盒是唯一不依赖引擎行为的做法），侧边栏全程保持可见、可点、可拖宽，画布取景也只覆盖可见区域（不同引擎对嵌在裁剪面板树内 fixed 元素的绘制与命中行为不一致，零重叠/零越界是唯一稳妥做法）。弹窗门户层（z-50）仍在其上。全屏切换是显式取景动作（与方向翻转载同契约）：切换时重置稳定视口守卫，同一布局按切换后的画布尺寸重新适配居中，进出全屏各一次。Esc 退出（捕获并消费该按键，避免同一次按键再穿透关闭弹窗或取消内联编辑），全屏期间锁定页面滚动。全屏是专注画布的工作面：编辑卡头部（标题/副标题、画布-JSON Tab、撤销重做、模板与保存按钮及其底部分割线）在全屏中不渲染，画布工具条、GraphControls（含退出全屏）与检查器铺满覆盖层；退出全屏后头部操作恢复（同一编辑器实例，草稿保留）。
 - 工作流图节点长文本默认优先展示前部内容，尾部截断；鼠标悬浮节点标题或元信息时展示完整全文。
 - 工作流图边必须直接展示 success / failure 等分支 label，label 随当前语言本地化；作者态所有边统一使用同一个 routed edge renderer，作者态与运行态 label 都使用不透明主题背景并固定在连线前景层，标签跟随实际绕行路径中心，任何路径方向都不得让线条覆盖标签。边持续保持虚线流动效果，运行中边可使用更高亮的流动节奏，但动画只能由 CSS 完成，不得触发路径搜索或画布重新布局。
 - 工作流图节点中的 agent icon 使用固定浅色底座，并按 SVG 内部留白做视觉缩放，保证 Claude、Codex、Cursor、Gemini、OpenCode 的图标面积接近。
@@ -250,7 +251,45 @@ Round 详情页的实际工作图是运行排障的主入口。用户单击节�
 - AI-DYNAMIC 内部控制协议产物 `dynamic-node-completion` 也作为产物展示；runtime 必须只在 provider 已返回完整且合法的 artifact 内容后落盘该文件，不允许用 0 字节占位文件、停止前最后一句普通 assistant 文本或非法 JSON 触发产物数量和弹窗入口。
 - 点击 artifact 或 attachment 后打开二级抽屉展示完整内容；二级抽屉左上提供返回按钮，返回上一级节点详情。
 
-右键菜单只作为低频快捷入口，保留查看详情、查看会话、查看日志、复制 node id、从该节点重跑；核心浏览路径必须通过单击节点完成。
+#### 7.1.1 当前节点重试契约
+
+> 详细实施设计见[工作流当前节点重试设计方案](../../../开发计划/生命周期整理/工作流当前节点重试设计方案.md)。
+
+右键菜单只作为低频快捷入口，保留查看详情、查看会话、查看日志、复制 node id；当前失败的外层普通 Workflow 节点额外提供“重试当前节点”。核心浏览路径必须通过单击节点完成，历史节点不显示“从该节点重跑”入口。
+
+当前节点重试使用 canonical run 的 `current_round/current_node/current_attempt` 作为唯一执行位置，在同 round、同 node 下创建新 attempt。旧 attempt、旧产物、旧 ACP session 与日志全部保留；新 attempt 使用新 ACP session 和新产物目录。该操作不回滚下游节点，只允许用于尚未成功推进的当前节点。
+
+可用条件：
+
+- 节点是当前 canonical 外层普通 Workflow 节点，且存在稳定 attempt locator；当前 Run 尚未进入终态。
+- 当前 Run 必须为 `Paused + RuntimeAbnormal`，且当前 node 为 `Paused + outcome=null`、没有仍在推进的 runtime execution。`ErrorBlocked` 第一阶段一律不得用重试绕过；修复 workflow、profile、Agent、Git、DSL、continuation identity 或 runtime invariant 后创建 successor/new run。
+- 当前 attempt 没有 `manual_check_pending`；人工检查必须先被显式处理，不能用重试绕过。
+- 当前 Run 已发布的 execution plan、Agent、profile 与 Git/worktree 能力校验通过。
+- `Completed + Success/Failure` 均不提供当前节点重试；已完成 Run 需要使用 successor run / handoff 能力。
+- `Paused + RuntimeAbnormal` 但当前 node 已 `Completed + Success` 时使用既有 `recover-completed-attempt`，不创建新 attempt。
+
+命令契约使用 `retry_current_node(projectId, taskId, runId, expectedRoundId, expectedNodeId, expectedAttemptId)`。`expected` locator 是 durable CAS 条件：后端在旧 attempt 锁内重读权威状态，三者完全匹配才允许创建新 attempt；进程内锁只负责同一桌面 runtime instance 的临界区串行化，不能冒充跨进程 CAS。若 current attempt 已是 expected attempt 在 canonical trace 中的直接 retry successor，则把请求视为首次提交的幂等重投，返回同一 `operationId + locator` 与当前最新 Run 摘要；其他不匹配返回 `workflow.retry.stale-locator`，前端刷新最新 run，不得自动再次提交。终态 Run 和 ErrorBlocked 分别返回 `workflow.retry.run-terminal`、`workflow.retry.error-blocked`。重复点击、并发请求和响应丢失后的同一请求最多创建一个新 attempt。
+
+重试使用当前 Run 的 execution plan。后端在锁外按该版本完成预检，提交时按 plan read lock → attempt lock 复核版本并持锁到状态落盘。预检期间发布新版本时，返回既有 `conversation.execution-plan.revision-conflict`，不创建 attempt；刷新后重新提交使用新计划。幂等命中仍优先返回已接受操作，不因后续计划更新重复执行。新 attempt 创建后，其调用配置不随计划更新回写。
+
+“继续”、completed-attempt recovery 与 retry 在登记恢复候选前必须先复核各自的权威位置和状态。Continue 先提交时 retry 被 RunActive 拒绝；retry 先提交时迟到 Continue 或旧 completed recovery 被拒绝。失败请求不能覆盖或清理已接受执行的恢复 token，确保正常退出和重启仍能定位活跃 Run。
+
+状态提交顺序沿用 node -> round -> run：锁内先按旧 current locator 截断 `round.trace` 为 canonical 前缀，再分配下一个 attempt、创建 fresh node state、更新 current pointer、清理暂停原因并追加 retry step。`run.current_round/current_node/current_attempt` 是本次当前位置转移和新 trace step 的 durable commit marker，不是同 locator 状态更新的通用 revision；当前 round 的图、历史、恢复和执行上下文都按该 locator 截断 trace，已完成的更早 round 则使用完整已校验 trace。不能从当前 trace 尾部猜测 attempt。只有 run 文件成功原子替换并指向新 locator 后才算 accepted。
+
+会话树只展示 canonical trace 引用的节点和 attempts，节点状态来自该节点最后一个已提交 attempt。创建新 attempt 过程中留下的空目录、孤立文件和未提交尾部不得隐藏旧会话或显示额外的运行中会话；已提交节点文件损坏则明确返回读取错误。浏览历史 round 时，后端同时读取当前 round 上下文，进入新 round 后仍可打开之前的会话。
+
+新 attempt ID 通过共享目录预留 helper 原子创建：从 current attempt 的下一编号开始，已存在则递增重试，允许崩溃遗留目录造成编号空洞；不得依赖“扫描最大编号后再创建”的竞态窗口。该手动重试不改变 Workflow Control 中 `max_attempts` 仅统计 failure 修复跳转的既有语义。
+
+命令返回 `RetryCurrentNodeAcceptedVm`：包含最新 Run summary、新 attempt 完整 locator 和稳定 `operationId`；幂等重投保持 `operationId + locator` 不变，Run summary 取重投时的最新权威状态。accepted 不表示后台已完成。后续执行交由后台驱动和既有 runtime candidate / interrupted 恢复语义；后台 spawn 失败必须只做一次 terminalize，不能留下永久 running 或返回第二个 accepted。结构化错误码集中管理，后端只返回 code 与 params，不生成对客文案。
+
+重试命令使用异步 IPC；workspace 解析、环境预检、锁等待和状态提交完整进入既有 blocking pool，准备阶段不能占用窗口主线程或 async runtime 调度线程。界面在等待命令时继续响应用户操作，维持目标节点的 pending 指示；命令仍在 durable commit 与后台驱动交接完成后返回 accepted，不提前确认成功。
+
+retry 成功进入后继节点后发生异常时，暂停和错误事件必须指向实际出错的当前节点；后台驱动持续跟踪自己的执行位置，并按现有 execution identity 防止迟到失败覆盖用户停止或新执行。
+
+前端运行图投影为每个节点提供 `retryable` 布尔值，由后端从同一纯生命周期 readiness 规则派生；`retryable=true` 只表示生命周期允许发起操作，不预先执行 Agent、profile、模型或 Git/worktree 的 executable preflight。只有 `retryable` 的当前节点显示可点击的“重试当前节点”；不可重试节点不显示该菜单项。点击后菜单关闭，节点显示目标级 pending 指示但不伪造 running 生命周期；请求 pending 按完整 locator 去重，保持到命令与最新快照读取完成。
+
+首次加载、live event、重试、停止和 execution plan 保存后的 Run 读取共用同一刷新管线。同一 `projectId/taskId/runId` 最多一个读取在途，重叠刷新只保留一个最新的后续重读；有后续重读时不向消费端发布旧结果或旧失败，等待最新重读收敛。应用快照前核对操作所属的 canonical `projectId/taskUuid/runId` 与当前页面，切换 Run 或复用可读 locator 不得串数据，旧命令返回后也不得转而刷新新页面。刷新使用返回时最新的手动 session 选择，保留用户正在浏览的历史会话；读取失败保留当前图和会话，后续刷新可以恢复。
+已打开的 workflow-view 工作区跟随 `workflowGraph` 投影更新；保持 renderer 注册稳定，只在当前图引用变化时刷新右侧图，避免中心页和右侧工作区显示不同状态。
 
 ### 7.2 会话页
 
@@ -342,3 +381,9 @@ MVP 中任务工作流页由 Tauri command `get_workflow` 提供 view model，�
 ## 10. 一句话总结
 
 > 任务工作流页顶部通过“工作流”卡片管理原始 workflow 生命周期，主区域聚焦这个 workflow 在每次 run / round 中实际跑成了什么样。
+
+## 首次启动的默认模型应用
+
+引导按当前渠道内置 ID 集合枚举全部 Worker execution slot，预览并批量写入既有 WorkflowModelBindings，包括未启用的可选入口；初始绑定为空时也必须逐槽补齐。用户重跑引导时可展开查看将替换的当前绑定。只替换 Agent、模型及模型参数；同 Agent 保留原权限，换 Agent 使用经能力校验的权限并关闭 Auto Accept。用户模板、已有 Task／定时任务、Run snapshot、结构、角色与 last_used_template_id 不受影响。
+
+预览使用纯读取接口；初始化／内置定义升级只为新模板或新 slot 填入默认初值，刻意清空的已有 slot 不被重新绑定。设置和模板通过同一短锁及两文件恢复记录提交，详见[首次启动引导](first-run-onboarding.md)。

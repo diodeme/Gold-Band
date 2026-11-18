@@ -320,6 +320,19 @@ describe('AcpConversationComposer', () => {
     expect(host.textContent).not.toContain('Shift+Enter');
   });
 
+  it('keeps a manually pinned height uncapped instead of re-capping the textarea at 320px', async () => {
+    // A persisted manual height above the 320px autosize cap must reach the
+    // PromptInput as maxHeight=null (uncapped), not fall back to 320 via a
+    // `null ?? 320` coercion; the pinned scroll container owns scrolling.
+    window.localStorage.setItem('composer/input-height-px', '400');
+    await renderComposer({ attachedPanelVisible: false });
+    const textarea = host.querySelector('textarea');
+    expect(textarea).toBeTruthy();
+    // Uncapped mode: the textarea never scrolls itself (overflowY hidden).
+    expect(textarea?.style.overflowY).toBe('hidden');
+    window.localStorage.removeItem('composer/input-height-px');
+  });
+
   it('renders the agent heading and omits a role group heading', async () => {
     await act(async () => root.render(
       <SlashCommandMenu

@@ -627,6 +627,12 @@ impl TurnFileStore {
         Ok(empty)
     }
 
+    /// Metadata-only access: never migrate, rebuild a journal, or read CAS blobs.
+    pub fn read_change_set_metadata(&self, change_set_id: &str) -> Result<TurnFileChangeSet> {
+        validate_identifier(change_set_id)?;
+        read_json(&self.change_set_path(change_set_id))
+    }
+
     fn recorded_attachment_delta(&self, change_set: &TurnFileChangeSet) -> TurnAttachmentDelta {
         let root = self.attempt_dir.join("attachments");
         TurnAttachmentDelta {
@@ -697,6 +703,66 @@ impl TurnFileStore {
         attachment_id: &str,
     ) -> Result<Utf8PathBuf> {
         let change_set = self.load_change_set(change_set_id)?;
+        self.resolve_recorded_attachment(&change_set, attachment_id)
+    }
+
+    /// Menu and prompt-source reads use finalized metadata without migrating a legacy journal.
+    pub fn attachment_relative_path_metadata(
+        &self,
+        change_set_id: &str,
+        attachment_id: &str,
+    ) -> Result<String> {
+        let change_set = self.read_change_set_metadata(change_set_id)?;
+        self.attachment_relative_path_from_change_set(&change_set, attachment_id)
+    }
+
+    pub fn attachment_relative_path_from_change_set(
+        &self,
+        change_set: &TurnFileChangeSet,
+        attachment_id: &str,
+    ) -> Result<String> {
+        let relative = self.recorded_attachment_relative_path(change_set, attachment_id)?;
+        let root = self.attempt_dir.join("attachments");
+        if std::fs::symlink_metadata(root.as_std_path())
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            return Err(anyhow!(ATTACHMENT_ACCESS_DENIED));
+        }
+        Ok(relative)
+    }
+
+    fn resolve_recorded_attachment(
+        &self,
+        change_set: &TurnFileChangeSet,
+        attachment_id: &str,
+    ) -> Result<Utf8PathBuf> {
+        let recorded_relative =
+            self.attachment_relative_path_from_change_set(change_set, attachment_id)?;
+        let relative = Utf8Path::new(&recorded_relative);
+        let root = self.attempt_dir.join("attachments");
+        let candidate = root.join(relative);
+        if std::fs::symlink_metadata(candidate.as_std_path())
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(true)
+        {
+            return Err(anyhow!(ATTACHMENT_ACCESS_DENIED));
+        }
+        let canonical_root =
+            std::fs::canonicalize(root.as_std_path()).map_err(|_| anyhow!(ATTACHMENT_NOT_FOUND))?;
+        let canonical_path = std::fs::canonicalize(candidate.as_std_path())
+            .map_err(|_| anyhow!(ATTACHMENT_NOT_FOUND))?;
+        if !canonical_path.is_file() || !canonical_path.starts_with(&canonical_root) {
+            return Err(anyhow!(ATTACHMENT_ACCESS_DENIED));
+        }
+        Utf8PathBuf::from_path_buf(canonical_path).map_err(|_| anyhow!(ATTACHMENT_ACCESS_DENIED))
+    }
+
+    fn recorded_attachment_relative_path(
+        &self,
+        change_set: &TurnFileChangeSet,
+        attachment_id: &str,
+    ) -> Result<String> {
         let attachment = change_set
             .attachments
             .iter()
@@ -715,28 +781,7 @@ impl TurnFileStore {
         {
             return Err(anyhow!(ATTACHMENT_ACCESS_DENIED));
         }
-        let root = self.attempt_dir.join("attachments");
-        if std::fs::symlink_metadata(root.as_std_path())
-            .map(|metadata| metadata.file_type().is_symlink())
-            .unwrap_or(false)
-        {
-            return Err(anyhow!(ATTACHMENT_ACCESS_DENIED));
-        }
-        let candidate = root.join(relative);
-        if std::fs::symlink_metadata(candidate.as_std_path())
-            .map(|metadata| metadata.file_type().is_symlink())
-            .unwrap_or(true)
-        {
-            return Err(anyhow!(ATTACHMENT_ACCESS_DENIED));
-        }
-        let canonical_root =
-            std::fs::canonicalize(root.as_std_path()).map_err(|_| anyhow!(ATTACHMENT_NOT_FOUND))?;
-        let canonical_path = std::fs::canonicalize(candidate.as_std_path())
-            .map_err(|_| anyhow!(ATTACHMENT_NOT_FOUND))?;
-        if !canonical_path.is_file() || !canonical_path.starts_with(&canonical_root) {
-            return Err(anyhow!(ATTACHMENT_ACCESS_DENIED));
-        }
-        Utf8PathBuf::from_path_buf(canonical_path).map_err(|_| anyhow!(ATTACHMENT_ACCESS_DENIED))
+        Ok(attachment.relative_path.clone())
     }
 
     pub fn snapshot(&self, version: &FileVersionRef) -> Result<CapturedTextSnapshot> {

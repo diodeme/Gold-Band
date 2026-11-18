@@ -247,6 +247,7 @@ fn with_available_claude_diagnostics(app: App) -> App {
         Ok(std::collections::BTreeMap::from([(
             "claude-acp".to_string(),
             ProviderDiagnosticSnapshot {
+                config_fingerprint: None,
                 available: true,
                 error: None,
                 checked_at: "2026-08-17T00:00:00Z".to_string(),

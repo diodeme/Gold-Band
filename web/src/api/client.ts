@@ -23,6 +23,7 @@ import type {
   ConversationSidebarBootstrapVm,
   ConversationSidebarVm,
   ConversationPinnedTaskPageVm,
+  ConversationRecentTaskPageVm,
   ConversationTaskPageVm,
   ConversationTaskRowVm,
   ConversationValidationResultVm,
@@ -252,7 +253,7 @@ export interface ConversationPromptQueueMutationVm {
   lifecycle?: ConversationAttemptLifecycleVm | null;
 }
 
-export interface ConversationPromptQueueRestoreVm {
+export interface ConversationPromptQueueReadVm {
   draft: ConversationQueuedPromptDraftVm;
   lifecycle?: ConversationAttemptLifecycleVm | null;
 }
@@ -399,6 +400,8 @@ export interface BrowserBookmarkVm {
 }
 
 export interface RuntimeApi {
+  resolveRightWorkspaceFileTarget(source: import('../types').PromptWorkspaceFileRef): Promise<import('../types').RightWorkspaceFileTargetVm>;
+  revealRightWorkspaceFile(source: import('../types').PromptWorkspaceFileRef): Promise<void>;
   reportSourceControlLoad(report: import("@/lib/source-control-load-diagnostics").SourceControlLoadReport): Promise<void>;
   reportSourceControlWatch(report: import("@/lib/source-control-watch-diagnostics").SourceControlWatchReport): Promise<void>;
   readProjectMemory(projectId: string): Promise<import('@/lib/memory').MemorySnapshot>;
@@ -465,6 +468,7 @@ export interface RuntimeApi {
   getProfile(id: string): Promise<ProfileVm>;
   createProfile(input: ProfileInput): Promise<ProfileVm>;
   importProfilesFromFolder(folderPath: string, dynamicTemplate: boolean): Promise<ImportProfilesResult>;
+  importProfilesFromFiles(filePaths: string[], dynamicTemplate: boolean): Promise<ImportProfilesResult>;
   updateProfile(id: string, input: ProfileInput): Promise<ProfileVm>;
   deleteProfile(id: string, force?: boolean): Promise<ProfileListVm>;
   chooseWorkspace(): Promise<AppBootstrapVm | null>;
@@ -496,9 +500,11 @@ export interface RuntimeApi {
   pauseRun(taskId: string, runId: string, projectId?: string | null): Promise<RunSummaryVm>;
   stopActiveSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null, backgroundControl?: import("../types").DirectBackgroundControl | null, expectedTurnId?: string | null): Promise<ActiveSessionStopVm>;
   submitManualCheck(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outcome: 'success' | 'failure'): Promise<RunSummaryVm>;
-  retryRun(taskId: string, runId: string): Promise<RunSummaryVm>;
+  retryCurrentNode(request: import('../types').RetryCurrentNodeRequest): Promise<import('../types').RetryCurrentNodeAcceptedVm>;
+  rerunFailedNode(request: import('../types').RetryCurrentNodeRequest): Promise<import('../types').RetryCurrentNodeAcceptedVm>;
   getLogPage(query: LogQueryInput): Promise<LogPageVm>;
   getAcpSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpSessionQueryInput, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
+  getConversationTurnIndex(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, branchId?: string | null, afterSeq?: number | null, outerNodeId?: string | null, outerAttemptId?: string | null, beforeSeq?: number | null): Promise<import('../types').ConversationTurnIndexEntryVm[]>;
   getAcpActivityDetail(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query: import('../types').AcpActivityDetailQueryInput, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<import('../types').AcpActivityDetailVm>;
   getAcpToolDetail(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query: import('../types').AcpToolDetailQueryInput, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<import('../types').AcpToolDetailVm>;
   getAcpCompactionSummary(locator: import('../types').TurnFileLocatorVm, query: import('../types').AcpCompactionSummaryQueryInput): Promise<import('../types').AcpCompactionSummaryVm>;
@@ -536,7 +542,8 @@ export interface RuntimeApi {
   takePendingInterventionNavigations(): Promise<InterventionNavigateEventVm[]>;
   submitConversationPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, input: import('../types').ConversationPromptInput, promptId?: string | null, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]): Promise<ConversationPromptSubmitVm>;
   reorderConversationQueuedPrompts(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, expectedRevision: number, orderedItemIds: string[], outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueMutationVm>;
-  restoreConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueRestoreVm>;
+  getConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueReadVm>;
+  releaseConversationQueuedPromptEdit(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueMutationVm>;
   deleteConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueMutationVm>;
   useConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, interruptActive?: boolean, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptSubmitVm>;
   setConversationPromptQueueMode(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, mode: 'auto' | 'manual', outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueMutationVm>;
@@ -544,7 +551,7 @@ export interface RuntimeApi {
   resumeConversationPromptQueue(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueMutationVm>;
   listConversationComposerDrafts(projectId: string | null | undefined, taskId: string): Promise<import('../types').ConversationComposerDraftBoxVm>;
   saveConversationComposerDraft(projectId: string | null | undefined, taskId: string, input: import('../types').ConversationPromptInput, attachmentPaths?: string[]): Promise<import('../types').ConversationComposerDraftBoxVm>;
-  takeConversationComposerDraft(projectId: string | null | undefined, taskId: string, draftId: string): Promise<import('../types').ConversationComposerDraftTakeVm>;
+  getConversationComposerDraft(projectId: string | null | undefined, taskId: string, draftId: string): Promise<import('../types').ConversationComposerDraftReadVm>;
   deleteConversationComposerDraft(projectId: string | null | undefined, taskId: string, draftId: string): Promise<import('../types').ConversationComposerDraftBoxVm>;
   getPromptQueueSettings(): Promise<import('../types').PromptQueueSettingsVm>;
   savePromptQueueSettings(input: import('../types').PromptQueueSettingsVm): Promise<import('../types').PromptQueueSettingsVm>;
@@ -563,6 +570,12 @@ export interface RuntimeApi {
   showConversationMessageAttachment(projectId: string, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, path: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
   showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
   saveDesktopPreferences(appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean, browser: import('../types').BrowserPreferences): Promise<PreferencesVm>;
+  /** Applies a zoom percent to the main webview without persisting it. */
+  applyDesktopZoom(percent: number): Promise<number>;
+  /** Persists exactly the interface zoom percent on the canonical personalization. */
+  saveInterfaceZoomPercent(percent: number): Promise<PreferencesVm>;
+  /** Persists exactly the workflow graph direction on the canonical personalization. */
+  saveWorkflowGraphDirection(direction: import('../types').WorkflowGraphDirectionPreference): Promise<PreferencesVm>;
   saveDesktopAvatar(input: SaveDesktopAvatarInput): Promise<PreferencesVm>;
   selectRecentDesktopAvatar(kind: AvatarKind, avatarId: string): Promise<PreferencesVm>;
   saveDesktopAvatarShape(kind: AvatarKind, shape: AvatarShape | null): Promise<PreferencesVm>;
@@ -570,7 +583,11 @@ export interface RuntimeApi {
   importDesktopWallpaper(colorScheme: ResolvedColorScheme): Promise<PreferencesVm | null>;
   selectRecentDesktopWallpaper(colorScheme: ResolvedColorScheme, wallpaperId: string): Promise<PreferencesVm>;
   saveDesktopWallpaperOpacity(colorScheme: ResolvedColorScheme, opacityPercent: number): Promise<PreferencesVm>;
+  saveDesktopWallpaperFit(colorScheme: ResolvedColorScheme, fit: import('../types').WallpaperFitPreference): Promise<PreferencesVm>;
   restoreThemeDesktopWallpaper(colorScheme: ResolvedColorScheme): Promise<PreferencesVm>;
+  clearDesktopWallpaper(colorScheme: ResolvedColorScheme): Promise<PreferencesVm>;
+  deleteRecentDesktopWallpaper(wallpaperId: string): Promise<PreferencesVm>;
+  selectThemeDesktopWallpaper(colorScheme: ResolvedColorScheme, assetId: string): Promise<PreferencesVm>;
   saveUpdaterSettings(overrideUrl: string | null): Promise<UpdaterSettingsVm>;
   updateNotificationAttention?(input: NotificationAttentionInput): Promise<void>;
   getMetricsSettings(): Promise<MetricsSettingsVm>;
@@ -608,7 +625,9 @@ export interface RuntimeApi {
   revokeRemoteImageHost(host: string): Promise<RemoteImageTrustVm>;
   getConversationSidebarBootstrap(): Promise<ConversationSidebarBootstrapVm>;
   getConversationTaskPage(projectId: string, cursor?: string | null, limit?: number): Promise<ConversationTaskPageVm>;
+  getConversationTaskSummary(projectId: string, taskId: string, taskUuid?: string | null): Promise<ConversationTaskRowVm>;
   getConversationPinnedTaskPage(cursor?: string | null, limit?: number): Promise<ConversationPinnedTaskPageVm>;
+  getConversationRecentTaskPage(cursor?: string | null, limit?: number): Promise<ConversationRecentTaskPageVm>;
   getConversationRunSummaryPage(projectId: string, taskId: string, cursor?: string | null, limit?: number): Promise<ConversationRunSummaryPageVm>;
   acknowledgeConversationTerminalResult(projectId: string, taskId: string, eventId: string): Promise<import('../types').ConversationTerminalResultAcknowledgementVm>;
   listScheduledTasks(projectId?: string | null): Promise<import('../types').ScheduledTaskVm[]>;

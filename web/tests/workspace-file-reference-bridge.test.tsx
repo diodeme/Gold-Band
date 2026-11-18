@@ -26,6 +26,7 @@ function Harness({
   commandRef.current = command;
   const reference: ComposerWorkspaceFileRef = {
     id: 'project-1:src/a.ts',
+    source: { kind: 'workspace', projectId: 'project-1', relativePath: 'src/a.ts' },
     projectId: 'project-1',
     relativePath: 'src/a.ts',
     name: 'a.ts',
@@ -74,6 +75,20 @@ let root: Root | null = null;
 let container: HTMLElement | null = null;
 
 describe('workspace file reference bridge', () => {
+  it('does not deliver a captured async reference to a replacement composer', () => {
+    const { result } = renderBridge();
+    const first = vi.fn(() => ({ kind: 'added' as const }));
+    const second = vi.fn(() => ({ kind: 'added' as const }));
+    let unregister = () => {};
+    act(() => { unregister = result.current.bridge.register({ addWorkspaceFileRef: first, addQuote: () => ({ kind: 'added' }) }); });
+    const captured = result.current.commands.captureFileReferenceTarget()!;
+    act(() => { unregister(); result.current.bridge.register({ addWorkspaceFileRef: second, addQuote: () => ({ kind: 'added' }) }); });
+    const reference: ComposerWorkspaceFileRef = { id: 'file', source: { kind: 'workspace', projectId: 'p', relativePath: 'a.ts' },
+      projectId: 'p', relativePath: 'a.ts', name: 'a.ts', byteLength: 1, mimeType: 'text/plain' };
+    expect(captured(reference, { isDocked: true })).toEqual({ kind: 'unavailable' });
+    expect(first).not.toHaveBeenCalled();
+    expect(second).not.toHaveBeenCalled();
+  });
   afterEach(() => {
     act(() => root?.unmount());
     container?.remove();

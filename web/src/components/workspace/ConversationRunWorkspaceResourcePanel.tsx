@@ -81,6 +81,7 @@ interface ConversationRunWorkspaceResourcePanelProps {
   /** Fires after an execution-plan save fully committed so the owner can refresh the run projection. */
   onExecutionPlanSaved?: (saved: ExecutionPlanSaveResultVm) => void | Promise<void>;
   onNodeOpenSession?: (node: GraphNodeVm) => void;
+  onNodeRetry?: (node: GraphNodeVm) => void | Promise<void>;
 }
 
 export function conversationRunWorkspacePropsAreEqual(
@@ -93,6 +94,7 @@ export function conversationRunWorkspacePropsAreEqual(
   if (prev.workflowTemplates !== next.workflowTemplates) return false;
   if (prev.onExecutionPlanSaved !== next.onExecutionPlanSaved) return false;
   if (prev.onNodeOpenSession !== next.onNodeOpenSession) return false;
+  if (prev.onNodeRetry !== next.onNodeRetry) return false;
   const sameScope = prev.run.projectId === next.run.projectId
     && prev.run.taskId === next.run.taskId
     && prev.run.taskUuid === next.run.taskUuid
@@ -111,6 +113,7 @@ function ConversationRunWorkspaceResourcePanelComponent({
   onWorkflowTemplatesChange,
   onExecutionPlanSaved,
   onNodeOpenSession,
+  onNodeRetry,
 }: ConversationRunWorkspaceResourcePanelProps) {
   if (resource.kind === 'auto-config') {
     return (
@@ -124,7 +127,7 @@ function ConversationRunWorkspaceResourcePanelComponent({
     );
   }
   if (resource.kind === 'workflow-view') {
-    return <WorkflowViewPanel run={run} onNodeOpenSession={onNodeOpenSession} />;
+    return <WorkflowViewPanel run={run} onNodeOpenSession={onNodeOpenSession} onNodeRetry={onNodeRetry} />;
   }
   if (resource.kind === 'workflow-edit') {
     return (
@@ -163,7 +166,7 @@ function WorkspaceLoadingState() {
   );
 }
 
-function WorkflowViewPanel({ run, onNodeOpenSession }: { run: ConversationRunVm; onNodeOpenSession?: (node: GraphNodeVm) => void }) {
+function WorkflowViewPanel({ run, onNodeOpenSession, onNodeRetry }: { run: ConversationRunVm; onNodeOpenSession?: (node: GraphNodeVm) => void; onNodeRetry?: (node: GraphNodeVm) => void | Promise<void> }) {
   const { t } = useTranslation();
   if (run.workflowGraph.nodes.length === 0) {
     return <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-muted-foreground">{t('common.empty')}</div>;
@@ -175,6 +178,7 @@ function WorkflowViewPanel({ run, onNodeOpenSession }: { run: ConversationRunVm;
         variant="actual"
         onNodeOpenDetail={onNodeOpenSession}
         onNodeOpenSession={onNodeOpenSession}
+        onNodeRetry={onNodeRetry}
       />
     </div>
   );

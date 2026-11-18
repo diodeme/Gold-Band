@@ -3,8 +3,62 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AcpSessionUpdatedEventVm } from '../../src/api/client';
 import { browserApi } from '../../src/api/browser';
+import { canonicalizeConversationPageIdentity, conversationPageMatchesRun } from '../../src/lib/conversation-navigation';
 
 describe('browserApi', () => {
+  it('resolves the ErrorBlocked preview deep link to its canonical run identity', async () => {
+    const run = await browserApi.getConversationRun('default', 'mock-task', 'run-051');
+    const page = canonicalizeConversationPageIdentity({
+      kind: 'conversation-run', projectId: 'default', taskId: 'mock-task', runId: 'run-051',
+    }, run.taskUuid);
+    expect(conversationPageMatchesRun(page, run)).toBe(true);
+    expect(run.pauseReason).toBe('error-blocked');
+    expect(run.workflowGraph.nodes.every((node) => !node.retryable && node.attempts?.every((attempt) => !attempt.retryable) !== false)).toBe(true);
+  });
+  it('forks a historical failed attempt once and seals only its source', async () => {
+    const request = { projectId: 'default', taskId: 'mock-task', runId: 'run-056', expectedRoundId: 'round-001', expectedNodeId: 'dev', expectedAttemptId: 'attempt-001' };
+    const first = await browserApi.rerunFailedNode(request);
+    const repeated = await browserApi.rerunFailedNode(request);
+    expect(repeated.locator).toEqual(first.locator);
+    expect(first.locator.runId).not.toBe(request.runId);
+    const source = await browserApi.getConversationRun('default', 'mock-task', request.runId);
+    const successor = await browserApi.getConversationRun('default', 'mock-task', first.locator.runId);
+    expect(source.sealed).toBe(true);
+    expect(source.runStatus).toBe('completed');
+    expect(successor.sealed).toBe(false);
+    expect(successor.sessionTree.rounds[0].nodes[0].attempts.map((attempt) => [attempt.attemptId, attempt.inherited])).toEqual([['attempt-001', true], ['attempt-002', false]]);
+    await expect(browserApi.rerunFailedNode({ ...request, runId: 'run-051' })).rejects.toMatchObject({ code: 'workflow.retry.error-blocked' });
+  });
+  it('isolates saved composer drafts by project as well as task', async () => {
+    const saved = await browserApi.saveConversationComposerDraft('draft-project-a', 'shared-task', { displayText: 'private draft', quotes: [] });
+    const other = await browserApi.listConversationComposerDrafts('draft-project-b', 'shared-task');
+    expect(saved.items).toHaveLength(1);
+    expect(other.items).toHaveLength(0);
+  });
+
+  it('reads the complete saved draft without consuming or changing its revision', async () => {
+    const input = { displayText: 'saved payload', quotes: [], workspaceFiles: [{ kind: 'workspace' as const, projectId: 'draft-read-project', relativePath: 'docs/design.md' }] };
+    const saved = await browserApi.saveConversationComposerDraft('draft-read-project', 'read-task', input, ['C:/notes.txt']);
+    const id = saved.items[0].id;
+    const read = await browserApi.getConversationComposerDraft('draft-read-project', 'read-task', id);
+    expect(read.draft).toEqual({ content: input.displayText, quotes: [], workspaceFiles: input.workspaceFiles, attachmentPaths: ['C:/notes.txt'] });
+    expect(read.drafts).toEqual(saved);
+    expect(await browserApi.listConversationComposerDrafts('draft-read-project', 'read-task')).toEqual(saved);
+    await expect(browserApi.getConversationComposerDraft('another-project', 'read-task', id)).rejects.toMatchObject({ code: 'conversation.composer-draft-not-found' });
+    const deleted = await browserApi.deleteConversationComposerDraft('draft-read-project', 'read-task', id);
+    expect(deleted.items).toHaveLength(0);
+    expect(deleted.revision).toBe(saved.revision + 1);
+  });
+
+  it('bounds list previews while returning the complete Unicode payload on demand', async () => {
+    const content = '长草稿😀'.repeat(1000);
+    const saved = await browserApi.saveConversationComposerDraft('preview-project', 'preview-task', { displayText: content, quotes: [] });
+    expect(saved.items[0]).not.toHaveProperty('content');
+    expect(Array.from(saved.items[0].contentPreview)).toHaveLength(280);
+    const read = await browserApi.getConversationComposerDraft('preview-project', 'preview-task', saved.items[0].id);
+    expect(read.draft.content).toBe(content);
+  });
+
   it('keeps paused Workflow errors independent from manual ACP follow-up lifecycle', async () => {
     vi.resetModules();
     vi.useFakeTimers();
@@ -150,7 +204,7 @@ describe('browserApi', () => {
     expect(item).not.toHaveProperty('attachmentPaths');
     expect(item).not.toHaveProperty('quotes');
 
-    const restored = await browserApi.restoreConversationQueuedPrompt(
+    const restored = await browserApi.getConversationQueuedPrompt(
       'default',
       'mock-task',
       'run-053',

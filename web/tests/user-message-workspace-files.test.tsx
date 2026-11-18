@@ -25,6 +25,7 @@ describe('user message workspace file chips', () => {
     root = createRoot(container);
     const onOpen = vi.fn();
     const file: WorkspaceFileTimelineRef = {
+      source: { kind: 'workspace', projectId: 'default', relativePath: 'src/config.json' },
       projectId: 'default',
       relativePath: 'src/config.json',
       canonicalPath: '/default/src/config.json',

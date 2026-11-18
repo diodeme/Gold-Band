@@ -37,6 +37,7 @@ const callbacks = {
   onRetryBootstrap: () => {},
   onRequestWorkspaceTasks: () => {},
   onRequestPinnedTasks: () => {},
+  onRequestRecentTasks: () => {},
   onRequestTaskRuns: () => {},
 };
 
@@ -47,6 +48,8 @@ function sidebarVm(activity: ConversationTaskActivityVm | null): ConversationSid
     pinRefs: [],
     pinnedTasks: [],
     pinnedTaskPage: { status: 'ready', nextCursor: null },
+    recentTasks: [],
+    recentTaskPage: { status: 'not-loaded', nextCursor: null },
     tasksByWorkspace: {
       'workspace-a': [{
         projectId: 'workspace-a', taskId: 'task-a', taskUuid: 'uuid-a', title: 'Background task', autoTitle: false,
@@ -58,6 +61,7 @@ function sidebarVm(activity: ConversationTaskActivityVm | null): ConversationSid
     },
     workspaceTaskPages: { 'workspace-a': { status: 'ready', nextCursor: null } },
     lastActiveWorkspaceId: 'workspace-a',
+    preferences: { 'workspaces.collapsed': false },
   };
 }
 

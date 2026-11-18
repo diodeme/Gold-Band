@@ -297,6 +297,7 @@ fn probe_agent_diagnostics(
             Ok((
                 agent_id.to_string(),
                 ProviderDiagnosticSnapshot {
+                    config_fingerprint: None,
                     available: doctor.available,
                     error: doctor.error,
                     checked_at: chrono::Utc::now().to_rfc3339(),

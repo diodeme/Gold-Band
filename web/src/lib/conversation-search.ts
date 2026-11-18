@@ -49,6 +49,7 @@ export function conversationPageForSearchResult(
     kind: 'conversation-run',
     projectId: result.projectId,
     taskId: result.taskId,
+    taskUuid: result.taskUuid,
     runId,
   };
 }

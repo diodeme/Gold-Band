@@ -62,7 +62,7 @@ export const defaultAppearancePreference: AppearancePreference = {
   schemaVersion: 2, themeId: 'builtin.gold-band', colorScheme: 'system', visualQualityByTheme: {},
 };
 export const defaultPersonalizationPreference: PersonalizationPreference = {
-  schemaVersion: 4,
+  schemaVersion: 5,
   typography: {
     ui: { fontStack: { source: 'theme' }, fontSize: { source: 'theme' } },
     editor: { fontStack: { source: 'theme' }, fontSize: { source: 'theme' } },
@@ -77,6 +77,8 @@ export const defaultPersonalizationPreference: PersonalizationPreference = {
     agent: { image: { source: 'theme' }, shape: { source: 'theme' } },
     user: { image: { source: 'theme' }, shape: { source: 'theme' } },
   },
+  interfaceZoomPercent: 100,
+  workflowGraphDirection: 'auto',
 };
 
 export function normalizeAppearancePreference(value: AppearancePreference): AppearancePreference {
@@ -240,16 +242,25 @@ function applyRootVariables(root: HTMLElement, effective: EffectiveAppearance) {
 
 function applyVisibleWallpapers(effective: EffectiveAppearance, retryFailedResources = false) {
   if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return;
-  const userWallpaper = resolveUserWallpaper(effective.colorScheme);
+  const suppressed = resolveWallpaperSuppressed(effective.colorScheme);
+  const userWallpaper = suppressed ? null : resolveUserWallpaper(effective.colorScheme);
+  const pinnedThemeUrl = suppressed ? null : resolveThemeWallpaperPinUrl(effective);
   pruneWallpaperResources(effective, retryFailedResources);
   const surfaces = document.querySelectorAll<HTMLElement>('[data-theme-wallpaper-slot]');
   for (const surface of surfaces) {
     const slot = surface.dataset.themeWallpaperSlot as ThemeWallpaperSlot;
-    const themeDescriptor = effective.wallpapers[slot];
+    const slotDescriptor = effective.wallpapers[slot];
+    // source 'none' suppresses the theme's assignment entirely; a pin swaps
+    // only the image while slot styling stays with the theme descriptor.
+    const themeDescriptor = suppressed || !slotDescriptor
+      ? undefined
+      : pinnedThemeUrl
+        ? { ...slotDescriptor, url: pinnedThemeUrl }
+        : slotDescriptor;
     const descriptor: WallpaperProjectionDescriptor | undefined = userWallpaper
       ? {
           url: userWallpaper.url,
-          fit: 'cover' as const,
+          fit: userWallpaper.fit,
           position: 'center' as const,
           repeat: 'no-repeat' as const,
           opacity: userWallpaper.opacity,
@@ -323,6 +334,8 @@ function pruneWallpaperResources(effective: EffectiveAppearance, retryFailedReso
   for (const descriptor of Object.values(effective.wallpapers)) {
     if (descriptor) retainedUrls.add(descriptor.url);
   }
+  const pinnedThemeUrl = resolveThemeWallpaperPinUrl(effective);
+  if (pinnedThemeUrl) retainedUrls.add(pinnedThemeUrl);
   for (const colorScheme of ['light', 'dark'] as const) {
     const selected = resolveUserWallpaper(colorScheme);
     if (selected) retainedUrls.add(selected.url);
@@ -416,8 +429,26 @@ function resolveUserWallpaper(colorScheme: ResolvedColorScheme) {
         assetId: selected.id,
         url: selected.imageUrl,
         opacity: normalizeWallpaperOpacityPercent(preference.opacityPercent) / 100,
+        fit: preference.fit ?? 'cover',
       }
     : null;
+}
+
+function resolveWallpaperSuppressed(colorScheme: ResolvedColorScheme) {
+  return currentWallpaperPersonalization?.byColorScheme[colorScheme]?.image.source === 'none';
+}
+
+function resolveThemeWallpaperPinUrl(effective: EffectiveAppearance): string | null {
+  const preference = currentWallpaperPersonalization?.byColorScheme[effective.colorScheme];
+  if (preference?.image.source !== 'theme') return null;
+  const assetId = preference.image.assetId?.trim();
+  if (!assetId) return null;
+  // A pin only applies while the active theme still declares the asset for
+  // the active scheme; otherwise the theme's default assignment stands.
+  if (!Object.values(effective.wallpapers).some((descriptor) => descriptor.assetId === assetId)) return null;
+  const record = getThemePackage(effective.themeId).assets.records
+    .find((record) => record.id === assetId && record.kind === 'wallpaper');
+  return record?.outputUrl ?? null;
 }
 
 export function previewWallpaperOpacity(colorScheme: ResolvedColorScheme, opacityPercent: number) {

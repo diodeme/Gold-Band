@@ -9,6 +9,7 @@ import { useConversationBranchLiveSnapshot } from '@/lib/conversation-event-rout
 import { AgentConversationPanel } from './AgentConversationPanel';
 import { MAIN_WORKSPACE_TAB_ROOT, conversationDirectoryWorkspaceResourceKey, fileBrowserWorkspaceResourceKey, browserWorkspaceResourceKey, sourceControlWorkspaceResourceKey, useRightWorkspace, type RightWorkspaceResource } from './right-workspace-context';
 import { useFileContentEntry } from './files/file-content-store';
+import { RightWorkspaceFileMenu } from './RightWorkspaceFileMenu';
 
 export const RightWorkspaceDock = memo(function RightWorkspaceDock({
   acpChatEventPageSize,
@@ -396,6 +397,7 @@ function RightWorkspaceTabButton({
 }) {
   const { t } = useTranslation();
   return (
+    <RightWorkspaceFileMenu tab={tab}>
     <div
       data-right-workspace-tab="true"
       data-right-workspace-resource-key={tab.key}
@@ -432,5 +434,6 @@ function RightWorkspaceTabButton({
         <X className="size-3" />
       </Button>
     </div>
+    </RightWorkspaceFileMenu>
   );
 }

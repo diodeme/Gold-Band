@@ -27,6 +27,7 @@ const editorSource = readFileSync(fileURLToPath(new URL('../src/components/Workf
 const runtimeGraphSource = readFileSync(fileURLToPath(new URL('../src/components/GraphView.tsx', import.meta.url)), 'utf8');
 const graphControlsSource = readFileSync(fileURLToPath(new URL('../src/components/GraphControls.tsx', import.meta.url)), 'utf8');
 const stylesSource = readFileSync(fileURLToPath(new URL('../src/styles.css', import.meta.url)), 'utf8');
+const workspaceShellSource = readFileSync(fileURLToPath(new URL('../src/components/workspace/WorkspaceShell.tsx', import.meta.url)), 'utf8');
 
 function worker(id: string, patch: Partial<WorkflowWorkerNodeDsl> = {}): WorkflowWorkerNodeDsl {
   return { type: 'worker', id, provider: 'claude-acp', profile: 'developer', goal: `Run ${id}`, ...patch };
@@ -313,12 +314,15 @@ describe('workflow editor interaction contracts', () => {
   });
 
   it('centers a single outcome handle and splits validation outcomes symmetrically', () => {
-    expect(editorSource).toContain("const WORKFLOW_NODE_SINGLE_OUTCOME_TOP = '50%';");
+    // Single-outcome exits share the split success lane (34%) so mixed
+    // chains stay on one visual track with straight hops.
+    expect(editorSource).toContain("const WORKFLOW_NODE_SINGLE_OUTCOME_TOP = '34%';");
     expect(editorSource).toContain("const WORKFLOW_NODE_SPLIT_OUTCOME_TOP = { success: '34%', failure: '66%' } as const;");
     expect(editorSource).toContain('data.supportsFailureOutcome ? WORKFLOW_NODE_SPLIT_OUTCOME_TOP.success : WORKFLOW_NODE_SINGLE_OUTCOME_TOP');
-    expect(editorSource).toContain('style={{ top: WORKFLOW_NODE_SPLIT_OUTCOME_TOP.failure }}');
+    expect(editorSource).toContain('const failureHandleStyle = vertical ? { left: WORKFLOW_NODE_SPLIT_OUTCOME_TOP.failure } : { top: WORKFLOW_NODE_SPLIT_OUTCOME_TOP.failure };');
+    expect(editorSource).toContain('const successHandleStyle = vertical ? { left: successHandleOffset } : { top: successHandleOffset };');
     expect(editorSource).toContain('updateNodeInternals(id);');
-    expect(editorSource).toContain('[data.supportsFailureOutcome, id, updateNodeInternals]');
+    expect(editorSource).toContain('[data.sourcePosition, data.supportsFailureOutcome, data.targetPosition, id, updateNodeInternals]');
   });
 
   it('routes node, terminal, and edge deletion through the canvas toolbar', () => {
@@ -368,7 +372,7 @@ describe('workflow editor interaction contracts', () => {
 
   it('preserves the viewport, exposes keyboard/connection affordances, and lazily refreshes JSON', () => {
     expect(editorSource).toContain('viewport?: Viewport');
-    expect(editorSource).toContain('[visibleTerminalSignature, workflowTopologySignature, t]');
+    expect(editorSource).toContain('[visibleTerminalSignature, workflowTopologySignature, layoutDirection, t]');
     expect(editorSource).toContain('onMoveEnd={handleMoveEnd}');
     expect(editorSource).toContain('defaultViewport={viewportRef.current}');
     expect(editorSource).toContain('connectOnClick');
@@ -408,5 +412,110 @@ describe('workflow editor interaction contracts', () => {
     expect(stylesSource).toContain('.workflow-graph .react-flow__edgelabel-renderer');
     expect(stylesSource).toContain('.workflow-edge-flow .react-flow__edge-path');
     expect(stylesSource).toContain('animation: workflow-edge-flow 3.6s linear infinite;');
+  });
+
+  it('seeds the canvas layout direction from a locked preference before the first layout', () => {
+    // A vertical preference must not pay a wasted horizontal first layout plus
+    // a refit; the seed mirrors GraphView's immediate-preference contract.
+    expect(editorSource).toContain("useState<WorkflowLayoutDirection>(() =>");
+    expect(editorSource).toContain("directionPreference === 'vertical' ? 'DOWN' : 'RIGHT')");
+    expect(editorSource).toContain('useRef<WorkflowLayoutDirection>(layoutDirection)');
+  });
+
+  it('expands fullscreen editing as a viewport-level app overlay', () => {
+    // The element Fullscreen API maps to a WM window-state change on
+    // WebKitGTK (the WSL dev build): the compositor transition flashes
+    // white over the taskbar and stalls the frame, and on WebView2
+    // (Windows production) it only fills the webview anyway. Fullscreen
+    // is therefore a fixed viewport overlay — the same surface the
+    // runtime graphs' fullscreen dialog uses — with an opaque app
+    // background and the clamped height dropped.
+    // The overlay and the clamped height are mutually exclusive branches:
+    // two height utilities on one element resolve by stylesheet order
+    // (the arbitrary clamp sorts after h-auto in Tailwind v4), which
+    // sized the overlay as the clamped strip instead of the viewport.
+    expect(editorSource).toContain(
+      "? 'fixed inset-0 z-50 max-h-none bg-background text-foreground'",
+    );
+    expect(editorSource).toContain(
+      ": 'h-[clamp(520px,calc(100dvh-11rem),760px)]',",
+    );
+    expect(editorSource).not.toContain("editorFullscreen && 'fixed");
+    expect(editorSource).not.toContain('requestFullscreen');
+    expect(editorSource).not.toContain('exitFullscreen');
+    expect(editorSource).not.toContain('fullscreenchange');
+  });
+
+  it('hides the editing card header inside the fullscreen overlay', () => {
+    // Fullscreen is a focused canvas surface: the card header (title,
+    // subtitle, canvas/JSON tabs, undo/redo, template and save actions)
+    // would ride along as a strip of editing chrome — the subtitle text
+    // and its bottom divider — stealing vertical space. It only renders
+    // outside fullscreen; the canvas toolbar, GraphControls (with the
+    // exit action) and the inspector remain.
+    expect(editorSource).toMatch(/\{editorFullscreen \? null : \(\s*<CardHeader/);
+  });
+
+  it('lifts the right workspace dock above the shell while fullscreen', () => {
+    // The editor mounts as a right-dock resource panel (RightWorkspaceDock
+    // renders ConversationRunWorkspaceResourcePanel), so the fullscreen
+    // overlay lives inside #workspace-right — a z-10 stacking context whose
+    // siblings (center panel z-10, separators z-20) would paint over it.
+    // While fullscreen, the editor marks the document root and a global rule
+    // raises #workspace-right above every shell sibling; the overlay portal
+    // host (z-50, after #root) still shades it for dialogs.
+    expect(editorSource).toContain('data-workspace-editor-fullscreen');
+    expect(stylesSource).toContain(':root[data-workspace-editor-fullscreen] #workspace-right');
+    expect(stylesSource).not.toContain(':root[data-workspace-editor-fullscreen] #workspace-center');
+  });
+
+  it('yields the fullscreen overlay to the navigation sidebar', () => {
+    // WebKitGTK renders a fixed element nested in the clipped workspace
+    // panel tree differently from Chromium (the sidebar shows through the
+    // overlay while its hit region still eats sidebar clicks), so the
+    // overlay must not overlap the sidebar at all: the shell publishes the
+    // live left-panel width and the fullscreen surface starts at its right
+    // edge — the sidebar stays visible, clickable and resizable, and the
+    // canvas fit excludes the sidebar strip instead of centering under it.
+    expect(workspaceShellSource).toContain('--workspace-left-panel-width');
+    expect(workspaceShellSource).toContain("root.style.removeProperty('--workspace-left-panel-width')");
+    expect(editorSource).toContain("{ left: 'var(--workspace-left-panel-width, 0px)', top: 'var(--workspace-top-offset, 0px)' }");
+  });
+
+  it('starts the fullscreen surface below the workspace shell top', () => {
+    // WebKit clips a fixed element nested in the panel tree to the group
+    // box (below the 36px title bar): the canvas toolbar at m-3 lost its
+    // upper half to that clip. The shell publishes the group's live top
+    // offset and the fullscreen surface starts there — inside the clip box
+    // on WebKit, below the title bar on every engine, no clipping either
+    // way.
+    expect(workspaceShellSource).toContain('--workspace-top-offset');
+    expect(workspaceShellSource).toContain("root.style.removeProperty('--workspace-top-offset')");
+  });
+
+  it('refits the viewport when fullscreen toggles', () => {
+    // The stable-viewport guard means a canvas resize never reframes the
+    // graph: entering fullscreen carried the narrow dock's viewport into the
+    // huge canvas, parking the graph in a corner. A fullscreen toggle is an
+    // explicit framing action (same contract as a direction flip): the guard
+    // resets and the layout is refitted for the resized canvas on both
+    // enter and exit.
+    expect(editorSource).toContain('previousFullscreenRef.current === editorFullscreen');
+    expect(editorSource).toMatch(/\}, \[editorFullscreen, fitLayoutViewport, graphLayout, layoutDirection\]\);/);
+  });
+
+  it('exits the fullscreen overlay on Escape while fullscreen stays editor-local state', () => {
+    // The editor is a stateful work surface: fullscreen drives the editor
+    // container itself (toolbars, inspector and drafts travel along)
+    // instead of duplicating a second editor instance inside a dialog.
+    // Escape is consumed at capture so the same press does not also close
+    // an open dialog or cancel an inline edit, and the page scroll is
+    // locked while the overlay covers it (the fullscreen dialog's
+    // contract).
+    expect(editorSource).toContain('const toggleEditorFullscreen = useCallback(() => {');
+    expect(editorSource).toContain('setEditorFullscreen((active) => !active)');
+    expect(editorSource).toContain("event.key !== 'Escape'");
+    expect(editorSource).toContain('onFullscreen={toggleEditorFullscreen}');
+    expect(editorSource).toContain('fullscreenActive={editorFullscreen}');
   });
 });

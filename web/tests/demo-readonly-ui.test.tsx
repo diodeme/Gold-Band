@@ -20,7 +20,7 @@ describe('readonly experience presentation boundary', () => {
     const sidebar = <ConversationSidebar vm={demoSidebar('en')} active={{ kind: 'contexts' }} onSelect={onSelect}
       onNewConversation={noop} onSearch={noop} onPinTask={noop} onUnpinTask={noop}
       onRenameTask={noop} onDeleteTask={noop} onRetryBootstrap={noop} onRequestWorkspaceTasks={noop}
-      onRequestPinnedTasks={noop} onRequestTaskRuns={noop} />;
+      onRequestPinnedTasks={noop} onRequestRecentTasks={noop} onRequestTaskRuns={noop} />;
     try {
       await act(async () => root.render(sidebar));
       expect(container.textContent).toContain('conversation.sidebar.newChat');

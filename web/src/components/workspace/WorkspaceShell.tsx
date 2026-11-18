@@ -90,10 +90,16 @@ interface WorkspaceShellProps {
   onRetryBootstrap: () => void;
   onRequestWorkspaceTasks: (projectId: string, cursor?: string | null) => void;
   onRequestPinnedTasks: (cursor?: string | null) => void;
+  onRequestRecentTasks: (cursor?: string | null) => void;
+  /** Collapsing a sidebar list resets it to the default first page. */
+  onResetWorkspaceTaskPage?: (projectId: string) => void;
+  onResetRecentTaskPage?: () => void;
   onRequestTaskRuns: (task: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>, cursor?: string | null) => void;
   activeWorkspaceId?: string | null;
   defaultExpandedWorkspaceId?: string | null;
   workspaceRevealRequest?: ConversationSidebarWorkspaceRevealRequest | null;
+  onRetryReveal?: () => void;
+  onRevealHandled?: (requestId: number) => void;
   conversationTaskUuid?: string | null;
   workLocation?: SessionWorkLocationVm | null;
   conversationWorkspaceStore: ConversationWorkspaceStore;
@@ -333,10 +339,15 @@ function WorkspaceShellLayout({
   onRetryBootstrap,
   onRequestWorkspaceTasks,
   onRequestPinnedTasks,
+  onRequestRecentTasks,
+  onResetWorkspaceTaskPage,
+  onResetRecentTaskPage,
   onRequestTaskRuns,
   activeWorkspaceId: _activeWorkspaceId,
   defaultExpandedWorkspaceId,
   workspaceRevealRequest,
+  onRetryReveal,
+  onRevealHandled,
   children,
 }: WorkspaceShellProps) {
   const { t } = useTranslation();
@@ -593,6 +604,34 @@ function WorkspaceShellLayout({
     return () => cancelAnimationFrame(frame);
   }, [active.kind, autoCollapse.left, autoCollapse.right, recordPanelSnapshot, showLeft, showRightDock, sidebarWidth, workspace.requestedOpen, workspace.scopeKey, workspace.width]);
 
+  // Publish the live workspace layout edges for surfaces that must yield to
+  // the shell: the navigation-panel width (the fullscreen editor overlay
+  // starts at its right edge, so the sidebar stays visible and clickable
+  // instead of being painted over) and the panel group's top offset (the
+  // overlay starts below the title bar — WebKit clips a fixed element nested
+  // in the panel tree to the group box, which sheared the canvas toolbar's
+  // upper half). Set only while this shell is mounted; removed on unmount so
+  // other shells (workbench) never read stale values.
+  useEffect(() => {
+    const panel = document.getElementById('workspace-navigation');
+    const group = panelGroupElementRef.current;
+    if (!panel || !group) return undefined;
+    const root = document.documentElement;
+    const publish = () => {
+      root.style.setProperty('--workspace-left-panel-width', `${Math.round(panel.getBoundingClientRect().width)}px`);
+      root.style.setProperty('--workspace-top-offset', `${Math.round(group.getBoundingClientRect().top)}px`);
+    };
+    publish();
+    const observer = new ResizeObserver(publish);
+    observer.observe(panel);
+    observer.observe(group);
+    return () => {
+      observer.disconnect();
+      root.style.removeProperty('--workspace-left-panel-width');
+      root.style.removeProperty('--workspace-top-offset');
+    };
+  }, []);
+
   useEffect(() => {
     if (handledWorkspaceScopeRef.current !== workspace.scopeKey) {
       handledWorkspaceScopeRef.current = workspace.scopeKey;
@@ -779,6 +818,8 @@ function WorkspaceShellLayout({
               showMulticaTaskManagement={showMulticaTaskManagement}
               defaultExpandedWorkspaceId={defaultExpandedWorkspaceId}
               workspaceRevealRequest={workspaceRevealRequest}
+              onRetryReveal={onRetryReveal}
+              onRevealHandled={onRevealHandled}
               onSelect={onSelect}
               onNewConversation={onNewConversation}
               onSearch={onSearch}
@@ -795,6 +836,9 @@ function WorkspaceShellLayout({
               onRetryBootstrap={onRetryBootstrap}
               onRequestWorkspaceTasks={onRequestWorkspaceTasks}
               onRequestPinnedTasks={onRequestPinnedTasks}
+              onRequestRecentTasks={onRequestRecentTasks}
+              onResetWorkspaceTaskPage={onResetWorkspaceTaskPage}
+              onResetRecentTaskPage={onResetRecentTaskPage}
               onRequestTaskRuns={onRequestTaskRuns}
             />
           ) : null}

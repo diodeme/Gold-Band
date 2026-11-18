@@ -291,12 +291,16 @@ impl ServerHandler for MemoryMcp {
     async fn list_tools(
         &self,
         _: Option<PaginatedRequestParams>,
-        _: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        Ok(ListToolsResult {
-            tools: tools(self.language),
-            ..Default::default()
-        })
+        let mut result = ListToolsResult::with_all_items(tools(self.language));
+        if context
+            .protocol_version()
+            .is_some_and(|version| version.as_str() >= ProtocolVersion::V_2026_07_28.as_str())
+        {
+            result = result.with_ttl_ms(0).with_cache_scope(CacheScope::Private);
+        }
+        Ok(result)
     }
 
     async fn call_tool(

@@ -1,7 +1,10 @@
 use anyhow::{Result, anyhow};
 
 use crate::dsl::WorkflowDsl;
-use crate::runtime::{NodeState, RoundState, RunState, RuntimeAttemptLocator, write_node_state};
+use crate::runtime::{
+    NodeState, RoundState, RunState, RuntimeAttemptLocator, canonical_trace_for_round,
+    write_node_state,
+};
 use crate::storage::{read_json, write_json};
 
 use super::App;
@@ -26,7 +29,8 @@ pub(crate) fn refresh_runtime_execution_if_current(
         &app.paths
             .node_file(task_id, &run.id, round_id, node_id, attempt_id),
     )?;
-    if durable_run.status != crate::domain::RunStatus::Running
+    if durable_run.is_sealed()
+        || durable_run.status != crate::domain::RunStatus::Running
         || durable_run.current_round.as_deref() != Some(round_id)
         || durable_run.current_node.as_deref() != Some(node_id)
         || durable_run.current_attempt.as_deref() != Some(attempt_id)
@@ -58,7 +62,8 @@ pub(crate) fn current_attempt_state(
         .current_attempt
         .as_ref()
         .ok_or_else(|| anyhow!("run has no current attempt"))?;
-    let round: RoundState = read_json(&app.paths.round_file(task_id, &run.id, round_id))?;
+    let mut round: RoundState = read_json(&app.paths.round_file(task_id, &run.id, round_id))?;
+    round.trace = canonical_trace_for_round(run, std::slice::from_ref(&round), &round)?;
     let node: NodeState = read_json(
         &app.paths
             .node_file(task_id, &run.id, round_id, node_id, attempt_id),
@@ -141,10 +146,6 @@ pub(crate) fn persist_runtime_state_if_expected_execution_current(
     node: &NodeState,
     expected_execution_id: Option<&str>,
 ) -> Result<bool> {
-    let Some(execution_id) = expected_execution_id else {
-        persist_runtime_state(app, task_id, run, round, node)?;
-        return Ok(true);
-    };
     let state_lock = attempt_runtime_state_lock(
         app,
         task_id,
@@ -156,6 +157,13 @@ pub(crate) fn persist_runtime_state_if_expected_execution_current(
     let _guard = state_lock
         .lock()
         .map_err(|_| anyhow!("attempt runtime state lock poisoned"))?;
+    if app.run_status(task_id, &run.id)?.is_sealed() {
+        return Ok(false);
+    }
+    let Some(execution_id) = expected_execution_id else {
+        persist_runtime_state(app, task_id, run, round, node)?;
+        return Ok(true);
+    };
     let node_path =
         app.paths
             .node_file(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id);
@@ -164,7 +172,8 @@ pub(crate) fn persist_runtime_state_if_expected_execution_current(
         return Ok(false);
     }
     let durable_run: RunState = read_json(&app.paths.run_file(task_id, &run.id))?;
-    if durable_run.status != crate::domain::RunStatus::Running
+    if durable_run.is_sealed()
+        || durable_run.status != crate::domain::RunStatus::Running
         || durable_run.current_round != run.current_round
         || durable_run.current_node != run.current_node
         || durable_run.current_attempt != run.current_attempt

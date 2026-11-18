@@ -4,8 +4,10 @@ Gold Band 当前文档按目录式结构整理为 6 个主板块：
 
 ## 1. 产品设计
 - [产品概览](product/overview.md)
+- [Maling 通用能力迁入与验收边界](product/maling-integration.md)
 
 ## 2. 交互层
+- [首次启动引导技术方案（主流程已实现，发布矩阵待验收）](interaction/app/first-run-onboarding.md)
 - [交互层概览](interaction/cli/overview.md)
 - [定时任务交互设计](interaction/app/scheduled-task-management.md)
 - [CLI 规范](interaction/cli/cli.md)

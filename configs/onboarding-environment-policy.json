@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "status": "candidate",
+  "node": {
+    "ranges": [">=22.20.0 <23.0.0", ">=24.0.0 <25.0.0"],
+    "verifiedMajors": [22, 24],
+    "recommendedVersion": "24.22.0",
+    "helpUrl": "https://nodejs.org/en/download"
+  },
+  "npm": {
+    "ranges": [">=10.9.0 <11.0.0", ">=11.0.0 <12.0.0", ">=12.0.0 <13.0.0"],
+    "verifiedMajors": [10, 11, 12],
+    "matrixVersions": ["10.9.0", "11.19.1"]
+  },
+  "gitHelpUrl": "https://git-scm.com/downloads",
+  "probeTimeouts": {
+    "nativeCommandMs": 5000,
+    "packageManagerCommandMs": 15000
+  },
+  "nodeMatrixVersions": ["22.20.0", "22.22.3", "24.0.0", "24.22.0"],
+  "platforms": [
+    { "os": "win32", "cpu": "x64" },
+    { "os": "win32", "cpu": "arm64" },
+    { "os": "darwin", "cpu": "x64" },
+    { "os": "darwin", "cpu": "arm64" },
+    { "os": "linux", "cpu": "x64" },
+    { "os": "linux", "cpu": "arm64" }
+  ]
+}

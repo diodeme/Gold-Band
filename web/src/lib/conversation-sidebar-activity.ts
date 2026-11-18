@@ -8,6 +8,7 @@ import type {
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, ConversationTerminalResultUpdatedEventVm } from '@/api/client';
 import { parseTimestamp } from '@/lib/datetime';
 import { findConversationTask } from '@/lib/conversation-task-state';
+import { mapConversationRecentTasks, promoteConversationRecentTasks, promoteConversationLocatedTask } from '@/lib/conversation-sidebar-loading';
 import { isDirectBackgroundActive, useDirectBackgroundActive } from '@/lib/acp-background-control';
 
 export type ConversationSidebarRunStateRefreshTarget =
@@ -162,11 +163,15 @@ function projectConversationSidebarTask(
     : updatedWorkspaceTasks;
   const pinnedChanged = pinnedTasks.some((task, index) => task !== sidebar.pinnedTasks[index]);
   const workspaceChanged = nextWorkspaceTasks.some((task, index) => task !== workspaceTasks[index]);
-  if (!pinnedChanged && !workspaceChanged) return sidebar;
+  const priorRecentTasks = sidebar.recentTasks ?? [];
+  const recentTasks = mapConversationRecentTasks(priorRecentTasks, updateTask);
+  const recentChanged = recentTasks !== priorRecentTasks;
+  if (!pinnedChanged && !workspaceChanged && !recentChanged) return sidebar;
 
-  return {
+  let next = {
     ...sidebar,
     pinnedTasks: pinnedChanged ? pinnedTasks : sidebar.pinnedTasks,
+    recentTasks,
     tasksByWorkspace: workspaceChanged
       ? {
           ...sidebar.tasksByWorkspace,
@@ -174,6 +179,15 @@ function projectConversationSidebarTask(
         }
       : sidebar.tasksByWorkspace,
   };
+  // Recent rows also cover workspaces whose task page is not loaded, so the
+  // reorder trigger must check them independently of the workspace list.
+  const shouldPromoteRecent = shouldMoveToFront
+    || (sidebar.recentTasks ?? []).some((task) => activityTimeAdvanced(task));
+  if (shouldPromoteRecent) {
+    next = { ...next, recentTasks: promoteConversationRecentTasks(next.recentTasks, (task) => task.projectId === projectId && task.taskId === taskId) };
+  }
+  const activatedTask = shouldMoveToFront ? nextWorkspaceTasks[0] : null;
+  return activatedTask ? promoteConversationLocatedTask(next, activatedTask) : next;
 }
 
 function sameTerminalResult(
@@ -185,6 +199,41 @@ function sameTerminalResult(
     && left.runId === right.runId
     && left.kind === right.kind
     && left.occurredAt === right.occurredAt;
+}
+
+// Projects one task-row transform into the pinned, workspace, and recent
+// lists. Run-status facts are list-agnostic, so the three projections always
+// move together; a missed list is a bug, not an option.
+function projectConversationSidebarRunRows(
+  sidebar: ConversationSidebarVm,
+  projectId: string,
+  updateTask: (task: ConversationTaskRowVm) => ConversationTaskRowVm,
+): ConversationSidebarVm {
+  const pinnedTasks = sidebar.pinnedTasks.map(updateTask);
+  const currentWorkspaceTasks = sidebar.tasksByWorkspace[projectId] ?? [];
+  const workspaceTasks = currentWorkspaceTasks.map(updateTask);
+  const priorRecentTasks = sidebar.recentTasks ?? [];
+  const recentTasks = mapConversationRecentTasks(priorRecentTasks, updateTask);
+  const pinnedTasksChanged = pinnedTasks.some(
+    (task, index) => task !== sidebar.pinnedTasks[index],
+  );
+  const workspaceTasksChanged = workspaceTasks.some(
+    (task, index) => task !== currentWorkspaceTasks[index],
+  );
+  if (!pinnedTasksChanged && !workspaceTasksChanged && recentTasks === priorRecentTasks) {
+    return sidebar;
+  }
+  return {
+    ...sidebar,
+    pinnedTasks: pinnedTasksChanged ? pinnedTasks : sidebar.pinnedTasks,
+    recentTasks,
+    tasksByWorkspace: workspaceTasksChanged
+      ? {
+          ...sidebar.tasksByWorkspace,
+          [projectId]: workspaceTasks,
+        }
+      : sidebar.tasksByWorkspace,
+  };
 }
 
 function applyConversationSidebarTaskTerminalResult(
@@ -263,26 +312,7 @@ export function applyConversationSidebarRunLifecycle(
     if (!runsChanged && latestRun === task.latestRun) return task;
     return { ...task, runs, latestRun };
   };
-  const pinnedTasks = sidebar.pinnedTasks.map(updateTask);
-  const currentWorkspaceTasks = sidebar.tasksByWorkspace[projectId] ?? [];
-  const workspaceTasks = currentWorkspaceTasks.map(updateTask);
-  const pinnedTasksChanged = pinnedTasks.some(
-    (task, index) => task !== sidebar.pinnedTasks[index],
-  );
-  const workspaceTasksChanged = workspaceTasks.some(
-    (task, index) => task !== currentWorkspaceTasks[index],
-  );
-  if (!pinnedTasksChanged && !workspaceTasksChanged) return sidebar;
-  return {
-    ...sidebar,
-    pinnedTasks: pinnedTasksChanged ? pinnedTasks : sidebar.pinnedTasks,
-    tasksByWorkspace: workspaceTasksChanged
-      ? {
-          ...sidebar.tasksByWorkspace,
-          [projectId]: workspaceTasks,
-        }
-      : sidebar.tasksByWorkspace,
-  };
+  return projectConversationSidebarRunRows(sidebar, projectId, updateTask);
 }
 
 export function applyConversationSidebarRunStateUpdate(
@@ -307,25 +337,17 @@ export function applyConversationSidebarRunStateUpdate(
     const runs = task.runs.map(updateRun);
     const latestRun = task.latestRun ? updateRun(task.latestRun) : task.latestRun;
     const runsChanged = runs.some((run, index) => run !== task.runs[index]);
-    if (!runsChanged && latestRun === task.latestRun) return task;
-    return { ...task, runs, latestRun };
+    // A terminal run settles every execution of that run: any live-activity
+    // sample still pinned on the row is stale (the last session update may
+    // have arrived before the runner finished) and must stop the spinner.
+    // Background facts keep their own grace-window lifecycle and may re-arm
+    // through later events.
+    const terminal = isTerminalConversationRunStatus(event.status)
+      && task.activity != null
+      && task.activity.phase !== 'background';
+    if (!runsChanged && latestRun === task.latestRun && !terminal) return task;
+    return { ...task, runs, latestRun, activity: terminal ? null : task.activity };
   };
 
-  const pinnedTasks = sidebar.pinnedTasks.map(updateTask);
-  const workspaceTasks = sidebar.tasksByWorkspace[event.projectId] ?? [];
-  const nextWorkspaceTasks = workspaceTasks.map(updateTask);
-  const pinnedChanged = pinnedTasks.some((task, index) => task !== sidebar.pinnedTasks[index]);
-  const workspaceChanged = nextWorkspaceTasks.some((task, index) => task !== workspaceTasks[index]);
-  if (!pinnedChanged && !workspaceChanged) return sidebar;
-
-  return {
-    ...sidebar,
-    pinnedTasks: pinnedChanged ? pinnedTasks : sidebar.pinnedTasks,
-    tasksByWorkspace: workspaceChanged
-      ? {
-          ...sidebar.tasksByWorkspace,
-          [event.projectId]: nextWorkspaceTasks,
-        }
-      : sidebar.tasksByWorkspace,
-  };
+  return projectConversationSidebarRunRows(sidebar, event.projectId, updateTask);
 }

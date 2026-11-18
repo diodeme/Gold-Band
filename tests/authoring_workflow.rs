@@ -214,6 +214,7 @@ fn with_available_claude_diagnostics(app: App) -> App {
         Ok(BTreeMap::from([(
             "claude-acp".to_string(),
             ProviderDiagnosticSnapshot {
+                config_fingerprint: None,
                 available: true,
                 error: None,
                 checked_at: "2026-08-14T00:00:00Z".to_string(),
@@ -252,6 +253,7 @@ fn saved_workflow_model_config_remaps_only_observed_models_and_keeps_memory_in_s
     let root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let app = App::new(root).with_provider_diagnostics_source(std::sync::Arc::new(|| {
         Ok(BTreeMap::from([("claude-acp".to_string(), ProviderDiagnosticSnapshot {
+            config_fingerprint: None,
             available: true, error: None, checked_at: "2026-10-08T00:00:00Z".into(),
             capabilities: Some(serde_json::json!({"configOptions": [
                 {"id":"model", "category":"model", "currentValue":"observed", "options":[{"value":"observed"},{"value":"unknown"}]},

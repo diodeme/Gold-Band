@@ -633,6 +633,9 @@
       "switchToTreeView": "Cambiar a árbol de carpetas",
       "copyAbsolutePath": "Copiar ruta absoluta",
       "copyRelativePath": "Copiar ruta relativa",
+      "relativeToRunDirectory": "Relativa al directorio de ejecución",
+      "relativeToAttachmentDirectory": "Relativa al directorio de adjuntos",
+      "relativeToSourceWorkspace": "Relativa al directorio de trabajo de origen",
       "openWorkspaceFile": "Abrir archivo del espacio de trabajo",
       "referenceToConversation": "Referenciar en la conversación",
       "removeWorkspaceReference": "Eliminar referencia al archivo",
@@ -773,6 +776,12 @@
     }
   },
   "errors": {
+    "agent.launch-command-missing": "Este Agent no tiene comando de inicio. Añade el comando en la gestión de Agents y vuelve a ejecutar el diagnóstico.",
+    "provider": {
+      "auth-required": "Este Agent requiere autenticación para continuar.",
+      "auth-required-missing-env": "Este Agent requiere autenticación. Configura primero estas variables de entorno: {{env}}.",
+      "auth-required-login": "Este Agent requiere autenticación. Completa la autenticación con el proveedor y vuelve a comprobar."
+    },
     "npx-cache.busy": "Ya hay una reparación de caché en curso. Inténtalo más tarde.",
     "npx-cache.unavailable": "No se pudo verificar un directorio de caché npx reparable. Vuelve a ejecutar el diagnóstico de entorno.",
     "npx-cache.changed": "El diagnóstico, la configuración o la caché han cambiado. Cierra el diálogo y reintenta.",
@@ -923,6 +932,7 @@
     },
     "agent": {
       "already-exists": "El Agent {{agentType}} ya existe.",
+      "unsupported-platform": "Agent {{agentType}} no es compatible con la plataforma actual ({{os}}/{{arch}}).",
       "not-configured": "El Agent {{agentType}} no está configurado.",
       "display-name-required": "Introduzca un nombre de Agent.",
       "command-required": "Introduzca un comando de inicio del Agent."
@@ -946,7 +956,7 @@
       "compaction-summary-query-failed": "No se pudo cargar el resumen de compactación. Inténtalo de nuevo.",
       "adapter-exited": "El proceso del Agent finalizó durante {{method}}. Compruebe el comando, los argumentos, las variables de entorno, la red y la autenticación.",
       "adapter-exited-with-code": "El proceso del Agent finalizó durante {{method}} (código de salida {{exitCode}}). Compruebe el comando, los argumentos, las variables de entorno, la red y la autenticación.",
-      "adapter-start-failed": "No se pudo iniciar el Agent: {{osError}}",
+      "adapter-start-failed": "No se pudo iniciar {{command}}: {{osError}}",
       "doctor-timeout": "La comprobación del entorno del Agent agotó el tiempo de espera durante {{method}}."
     },
     "app": {
@@ -998,7 +1008,10 @@
         "folder-not-found": "No se encontró la carpeta seleccionada",
         "folder-not-directory": "La ruta seleccionada no es una carpeta",
         "folder-read-failed": "No se pudo leer por completo la carpeta seleccionada",
-        "no-markdown-files": "No se encontraron archivos Markdown en la carpeta seleccionada"
+        "no-markdown-files": "No se encontraron archivos Markdown en la carpeta seleccionada",
+        "file-not-found": "No se encontró el archivo seleccionado",
+        "file-not-markdown": "El archivo seleccionado no es un archivo Markdown",
+        "no-files": "No se seleccionó ningún archivo"
       }
     },
     "manual-check": {
@@ -1017,7 +1030,8 @@
       "continue-launch-channel-closed": "La reanudación del flujo de trabajo no se inició. Vuelva a intentarlo."
     },
     "composer": {
-      "context-limit-exceeded": "El contexto puede contener como máximo {{max}} referencias y archivos adjuntos."
+      "context-limit-exceeded": "El contexto puede contener como máximo {{max}} referencias y archivos adjuntos.",
+      "referenceUnavailable": "Referencia no disponible"
     },
     "conversation": {
       "task-not-found": "No se pudo encontrar esta conversación.",
@@ -1037,6 +1051,7 @@
       "session-restore-unsupported": "Este Agent no puede restaurar una sesión existente.",
       "history-sync-unsupported": "Este Agent no puede sincronizar el historial completo de una sesión existente.",
       "prompt-empty": "Introduzca un mensaje para enviar.",
+      "prompt-too-long": "El mensaje no puede superar {{maxChars}} caracteres.",
       "prompt-quote-invalid": "El texto citado no es válido. Elimínelo y vuelva a citar el mensaje.",
       "prompt-quote-limit-exceeded": "El texto citado no puede superar {{maxChars}} caracteres en total.",
       "prompt-quote-diff-limit-exceeded": "Las citas de diff completo no pueden superar {{maxBytes}} bytes en total.",
@@ -1049,6 +1064,7 @@
       "prompt-queue-full": "La cola pendiente está llena. Puede contener hasta 10 prompts.",
       "prompt-queue-item-not-found": "Este prompt en cola ya no existe.",
       "prompt-queue-item-dispatching": "Este prompt se está enviando y no se puede modificar ahora mismo.",
+      "prompt-queue-item-editing": "Este prompt se está restaurando para editar y no se puede modificar ahora mismo.",
       "prompt-queue-empty": "La cola pendiente está vacía.",
       "prompt-queue-revision-conflict": "El orden pendiente cambió. Inténtelo de nuevo después de que se actualice la lista.",
       "prompt-queue-invalid-order": "El orden pendiente no es válido. Vuelva a intentarlo.",
@@ -1063,7 +1079,8 @@
       "composer-draft-empty": "No hay nada que guardar.",
       "composer-draft-full": "Los borradores están llenos. Puedes guardar hasta {{max}}.",
       "composer-draft-not-found": "Este borrador ya no existe.",
-      "composer-draft-storage-failed": "No se pudieron guardar los borradores. Inténtalo de nuevo.",
+      "composer-draft-invalid": "Los datos de la caja de borradores no son válidos. Revisa los datos locales e inténtalo de nuevo.",
+      "composer-draft-storage-failed": "No se puede acceder a los borradores. Inténtalo de nuevo.",
       "execution-plan": {
         "not-found": "Este Run todavía no tiene un plan de ejecución.",
         "revision-conflict": "El plan de ejecución cambió. Vuelva a cargarlo e inténtelo de nuevo.",
@@ -1082,6 +1099,24 @@
       }
     },
     "workflow": {
+      "retry": {
+        "run-active": "El Workflow está en ejecución, así que no se puede reintentar el nodo actual.",
+        "run-terminal": "El Workflow ha finalizado, así que no se puede reintentar el nodo actual.",
+        "node-not-retryable": "El nodo actual no se puede reintentar en su estado actual.",
+        "error-blocked": "El Workflow está bloqueado por un error, así que no se puede reintentar el nodo actual.",
+        "manual-check-pending": "El nodo actual está esperando confirmación manual y no se puede reintentar.",
+        "unsupported-node": "Este tipo de nodo no admite reintentos.",
+        "stale-locator": "El nodo actual ha cambiado. Continúa desde el estado más reciente.",
+        "workflow-invalid": "La configuración del Workflow o el entorno de ejecución no son válidos, así que no se puede reintentar el nodo actual.",
+        "invalid-locator": "La ubicación del nodo no es válida. Actualiza e inténtalo de nuevo.",
+        "source-sealed": "Esta ejecución está sellada. No puede continuar ni recibir mensajes.",
+        "inherited-attempt": "Este nodo es heredado. Consulta su sesión en la ejecución de origen.",
+        "source-busy": "La sesión de origen aún se está deteniendo. Inténtalo de nuevo en unos instantes.",
+        "prefix-too-large": "El historial necesario es demasiado grande. Inicia una nueva ejecución desde el principio de la tarea.",
+        "target-missing": "Este nodo ya no existe en el Workflow más reciente.",
+        "workspace-unavailable": "El espacio de trabajo de origen no está disponible. Restáuralo primero.",
+        "plan-changed": "La configuración del Workflow cambió. Actualiza e inténtalo de nuevo."
+      },
       "agent-doctor-failed": "El Agent {{agentType}} no ha superado doctor.",
       "agent-doctor-required": "El Agent {{agentType}} debe superar doctor primero.",
       "permission-mode-unsupported": "El Agent {{agentType}} no admite el modo de permiso {{permissionMode}}.",
@@ -1235,6 +1270,9 @@
     "customAgentIdPlaceholder": "Por ejemplo, my-agent",
     "pending": "Pendiente",
     "configured": "Agregado",
+    "integrationOrigin": {
+      "communityAdapter": "Adaptador comunitario"
+    },
     "empty": "Aún no hay agents configurados",
     "createTitle": "Agregar Agent",
     "createDescription": "Crea una configuración de agent para la ejecución de nodos.",
@@ -1286,6 +1324,22 @@
     "diagnosing": "Diagnosticando",
     "savedAndDiagnosing": "Configuración guardada. Diagnosticando en segundo plano.",
     "diagnosticComplete": "Comprobación del entorno completada y el proceso de diagnóstico ha finalizado.",
+    "connectionGuide": {
+      "title": "Requisitos de conexión",
+      "command": "Comando de inicio",
+      "path": "PATH",
+      "pathRequirement": "{{command}} debe resolverse en el PATH efectivo de Gold Band, o selecciona abajo un ejecutable explícito.",
+      "fallback": "Alternativa",
+      "installedCli": "Un CLI local {{command}} puede activar la preparación controlada del ACP adapter.",
+      "preparedFallback": "Solo se usa una caché npx preparada; tener npx disponible no significa que el Agent esté instalado.",
+      "auth": "Autenticación",
+      "authRequirement": "Completa el inicio de sesión del proveedor o configura credenciales compatibles. Las variables de entorno se guardan en la configuración local del Agent.",
+      "steps": "Pasos de comprobación: resolver comando → iniciar ACP adapter → initialize → session/new → descubrir capacidades → cerrar el proceso de diagnóstico.",
+      "result": "Resultado más reciente",
+      "checkNow": "Comprobar ahora",
+      "saveToCheck": "Al guardar se ejecuta automáticamente la comprobación de conexión; el resultado también aparece en la tarjeta del Agent.",
+      "formChanged": "El formulario ha cambiado. Al guardar se comprobará la nueva configuración."
+    },
     "diagnosticFailed": "La comprobación del entorno no pasó: {{reason}}",
     "diagnosticFailedNoReason": "La comprobación del entorno no pasó.",
     "diagnosticFailedFallback": "Comprueba el comando del agent, la red y el estado de autenticación.",
@@ -1302,7 +1356,8 @@
     "status": {
       "unknown": "Desconocido",
       "healthy": "Correcto",
-      "unhealthy": "Incorrecto"
+      "unhealthy": "Incorrecto",
+      "stale": "Requiere nueva comprobación"
     }
   },
   "contextManagement": {
@@ -1333,7 +1388,6 @@
     "builtInSectionDescription": "Roles fijos que pueden abrirse como borradores y guardarse como roles personalizados nuevos.",
     "customSectionTitle": "Roles personalizados",
     "customSectionDescription": "Tus roles de usuario se muestran aquí con paginación.",
-    "customProfilesPageRange": "Roles personalizados {{start}}-{{end}} / {{total}}",
     "builtInReadonlyHint": "Los roles integrados no pueden guardarse directamente. Guárdalos como un rol nuevo.",
     "emptyContent": "Aún no hay contenido del rol",
     "profileRequired": "El nombre y el resumen son obligatorios.",
@@ -1438,10 +1492,12 @@
       "storageProject": "Nivel de proyecto. Guardado en {{path}}"
     },
     "importProfile": "Importar roles",
-    "importSettingsDescription": "Importa en lote archivos Markdown de roles desde una carpeta. Los nombres y resúmenes faltantes se completan automáticamente.",
+    "importSettingsDescription": "Importa en lote desde una carpeta o selecciona archivos Markdown de roles directamente. Los nombres y resúmenes faltantes se completan automáticamente.",
     "importDynamicTemplateDescription": "Cuando está habilitado, todos los roles importados se tratan como plantillas dinámicas; los cuerpos no válidos se degradan a estáticos.",
     "importPickFolder": "Elegir carpeta e importar",
     "importPickFolderTitle": "Elige una carpeta que contenga archivos Markdown de roles",
+    "importPickFiles": "Elegir archivos e importar",
+    "importPickFilesTitle": "Elige archivos Markdown de roles",
     "importResultTitle": "Resultados de importación",
     "importResultSummary": "Escaneados {{total}} archivo(s), correctos {{success}}, fallidos {{failed}}.",
     "importResultImported": "Importados",
@@ -1896,7 +1952,6 @@
     "loadFailed": "No se pudieron cargar los cambios de archivos de este turno",
     "partial": "Algunos cambios de archivos no se capturaron por completo",
     "showMore": "Mostrar {{count}} archivos más",
-    "collapse": "Contraer lista de archivos",
     "openDiff": "Ver diff de {{path}}",
     "openVersion": "Ver versión capturada de {{path}}",
     "deletedFile": "Eliminado {{path}}",
@@ -2230,6 +2285,18 @@
     "scrollForHistory": "— Desplázate hacia arriba para ver el historial —",
     "returnToLatest": "Volver al más reciente",
     "rawSearchPlaceholder": "Buscar contenido de tramas sin procesar…",
+    "turnRail": {
+      "older": "Turnos anteriores",
+      "newer": "Turnos posteriores",
+      "label": "Navegación de conversación",
+      "jump": "Saltar a: {{preview}}",
+      "kind": {
+        "prompt": "Pregunta del usuario",
+        "tool": "Llamada de herramienta",
+        "compaction": "Compactación de contexto",
+        "permission": "Solicitud de permiso"
+      }
+    },
     "rawKindPlaceholder": "Tipo de evento",
     "rawKindAll": "Todos los eventos",
     "rawDirectionAll": "Todas las direcciones",
@@ -2341,7 +2408,10 @@
       "interruptConfirmTitle": "¿Enviar este mensaje ahora?",
       "interruptConfirmDescription": "La respuesta actual se detendrá antes de enviar este mensaje.",
       "interruptConfirmSkip": "No volver a preguntar",
-      "interruptConfirmAction": "Detener y enviar"
+      "interruptConfirmAction": "Detener y enviar",
+      "itemStateEditing": "Restaurando para editar",
+      "itemStateSending": "Enviando",
+      "storageError": "No se pudo leer la cola de envío"
     },
     "composerDrafts": {
       "title": "Borradores",
@@ -2352,7 +2422,11 @@
       "take": "Mover a la entrada",
       "takeOccupied": "Primero resuelve el contenido actual de la entrada",
       "delete": "Eliminar borrador",
-      "takeConflict": "La entrada no está vacía, así que el borrador volvió a borradores."
+      "deleteConfirmTitle": "¿Eliminar este borrador?",
+      "deleteConfirmDescription": "Se eliminarán el texto, las citas, el rol y las referencias de adjuntos. Esta acción no se puede deshacer.",
+      "takeConflict": "El campo de entrada tiene contenido. El borrador permanece en la caja de borradores.",
+      "takeDeleteKept": "El contenido se restauró al campo de entrada; el borrador original sigue guardado.",
+      "saveFull": "La caja de borradores está llena; elimina un borrador antiguo para guardar más"
     },
     "sending": "Enviando",
     "sendFailed": "Error al enviar",
@@ -2482,13 +2556,21 @@
     "zoomIn": "Acercar",
     "zoomOut": "Alejar",
     "fitView": "Ajustar vista",
+    "direction": "Dirección del diseño",
+    "directionAuto": "Automático",
+    "directionHorizontal": "Horizontal",
+    "directionVertical": "Vertical",
+    "fullscreen": "Pantalla completa",
+    "exitFullscreen": "Salir de pantalla completa",
     "viewNodeDetail": "Ver detalle del nodo",
     "viewSession": "Ver sesión",
     "viewLog": "Ver registro",
     "copyNodeId": "Copiar node id",
-    "retryFromNode": "Reintentar desde este nodo",
+    "retryCurrentNode": "Reintentar nodo actual",
     "layoutPending": "Organizando el gráfico del flujo de trabajo",
-    "layoutFailed": "No se pudo organizar el gráfico del flujo de trabajo"
+    "layoutFailed": "No se pudo organizar el gráfico del flujo de trabajo",
+    "rerunFailedNode": "Volver a ejecutar desde este nodo",
+    "rerunFailedAttempt": "Volver a ejecutar desde {{attempt}}"
   },
   "settings": {
     "title": "Configuración",
@@ -2539,6 +2621,10 @@
     "editorFontSize": "Tamaño de fuente del editor",
     "editorFontSizeDescription": "Ajuste el texto en las vistas de archivos y diffs de CodeMirror.",
     "resetFontSize": "Restaurar tamaño de fuente predeterminado",
+    "interfaceZoom": "Zoom de la interfaz",
+    "interfaceZoomDescription": "Escala toda la interfaz del cliente; también funciona con Ctrl+rueda o Ctrl+más/menos.",
+    "interfaceZoomInvalid": "Introduce un número entre 50 y 250",
+    "resetZoom": "Restaurar zoom predeterminado",
     "localFonts": "Pila de fuentes personalizada",
     "chooseLocalFont": "Agregar o quitar fuentes",
     "localFontsDescription": "{{count}} fuentes locales cargadas. Cuanto más arriba estén, mayor prioridad tienen.",
@@ -2768,16 +2854,26 @@
       }
     },
     "wallpaper": {
+      "deleteRecent": "Eliminar este fondo de pantalla",
       "title": "Fondo de pantalla",
       "chooseTitle": "Fondo de pantalla del escritorio",
       "description": "Un fondo de pantalla personalizado reemplaza el del tema y se adapta al tamaño del cliente.",
-      "choose": "Elegir fondo de pantalla",
       "recent": "Usados recientemente",
       "useRecent": "Usar este fondo de pantalla reciente",
       "noRecent": "No hay fondos de pantalla recientes",
       "import": "Importar fondo de pantalla nuevo",
-      "restoreTheme": "Restaurar fondo de pantalla del tema",
+      "sourceTheme": "Fondo del tema",
+      "sourceCustom": "Personalizado",
+      "sourceDisable": "Desactivar",
+      "themeUnavailable": "El tema actual no tiene fondo de pantalla",
+      "none": "Desactivar fondo del tema",
+      "noneActive": "Desactivado",
+      "themeGallery": "Fondos de pantalla del tema",
+      "useThemeWallpaper": "Usar este fondo de pantalla del tema",
       "visibility": "Visibilidad del fondo de pantalla",
+      "fitLabel": "Ajuste",
+      "fitCover": "Rellenar",
+      "fitContain": "Ajustar",
       "previewTitle": "Vista previa del fondo de pantalla",
       "expandPreview": "Expandir vista previa del fondo de pantalla",
       "collapsePreview": "Contraer vista previa del fondo de pantalla",
@@ -2883,43 +2979,6 @@
       "confirmInterrupt": "Confirmar antes de que \"Enviar ahora\" interrumpa una respuesta"
     }
   },
-  "multica": {
-    "taskManagement": {
-      "title": "Requisitos",
-      "source": {
-        "label": "Origen de la tarea",
-        "multica": "Multica"
-      },
-      "workspace": {
-        "label": "Espacio de trabajo",
-        "remove": "Quitar espacio de trabajo",
-        "removeConfirm": "¿Quitar este espacio de trabajo? Sus requisitos ya no se mostrarán."
-      },
-      "column": {
-        "empty": "Sin tareas"
-      },
-      "account": {
-        "connected": "Conectado",
-        "switchAccount": "Cambiar cuenta",
-        "disconnect": "Desconectar"
-      }
-    },
-    "connection": {
-      "title": "Dirección de conexión",
-      "addressLabel": "Dirección de conexión",
-      "save": "Guardar",
-      "invalidUrl": "Introduce una dirección http(s) válida",
-      "restoreDefault": "Restaurar dirección predeterminada",
-      "restoring": "Restaurando…"
-    },
-    "connect": {
-      "title": "Conectar Multica",
-      "body": "A punto de conectar con:",
-      "confirm": "Conectar",
-      "connecting": "Conectando…",
-      "cancelConnect": "Cancelar conexión"
-    }
-  },
   "conversation": {
     "title": "Conversación",
     "newConversation": "Nueva conversación",
@@ -2988,6 +3047,13 @@
       "loadingPinned": "Cargando conversaciones fijadas…",
       "retryPinned": "No se pudieron cargar las conversaciones fijadas. Haz clic para reintentar",
       "loadMorePinned": "Cargar más conversaciones fijadas",
+      "recent": "Recientes",
+      "loadingRecent": "Cargando conversaciones recientes",
+      "retryRecent": "Reintentar conversaciones recientes",
+      "noRecent": "No hay conversaciones recientes",
+      "loadMoreRecent": "Mostrar más conversaciones recientes",
+      "allRecentShown": "Todas las conversaciones recientes mostradas",
+      "allConversationsShown": "Todas las conversaciones mostradas",
       "loadingRuns": "Cargando historial de ejecuciones…",
       "retryRuns": "No se pudo cargar el historial de ejecuciones. Haz clic para reintentar",
       "loadMoreRuns": "Cargar más ejecuciones",
@@ -3033,7 +3099,8 @@
     "composer": {
       "multicaNeedLocalWorkspace": "Añada un espacio de trabajo local antes de ejecutar un requisito",
       "multicaBindingTag": "Multica · {{title}}",
-      "removeMulticaBinding": "Desvincular tarea"
+      "removeMulticaBinding": "Desvincular tarea",
+      "resizeHandle": "Arrastra para ajustar la altura del cuadro de entrada"
     },
     "branchPicker": {
       "label": "Rama",
@@ -3136,7 +3203,12 @@
       "worktree": "worktree",
       "composerRuntimeControlledPlaceholder": "Esta sesión está controlada por runtime, por lo que la entrada no está disponible temporalmente",
       "composerStoppingPlaceholder": "Deteniendo la sesión actual…",
-      "composerStoppedPlaceholder": "Esta sesión se detuvo. Puede introducir cualquier mensaje para continuar la ejecución"
+      "composerStoppedPlaceholder": "Esta sesión se detuvo. Puede introducir cualquier mensaje para continuar la ejecución",
+      "nodeRerunConfirmTitle": "¿Volver a ejecutar desde {{node}} / {{attempt}}?",
+      "nodeRerunConfirmDescription": "Detén la ejecución de origen, crea un nuevo Run con el Workflow más reciente y vuelve a ejecutar este nodo y los siguientes. Se conservarán los cambios del espacio de trabajo y las acciones externas.",
+      "sourceSealed": "La ejecución de origen está sellada. Su historial sigue disponible.",
+      "rerunHistoryHint": "Las sesiones anteriores permanecen en la ejecución de origen.",
+      "viewRerunSource": "Ver ejecución de origen"
     },
     "gitRequirement": {
       "versionUnsupportedTitle": "Git está desactualizado",
@@ -3215,5 +3287,171 @@
     "validationPositiveNumber": "{{field}} debe ser mayor que 0",
     "validationTemplateNameRequired": "El nombre de la plantilla es obligatorio",
     "validationTemplateNameDuplicated": "El nombre de plantilla {{name}} ya existe"
+  },
+  "onboarding": {
+    "loading": "Cargando",
+    "loadFailed": "No se pudo leer la configuración inicial. Inténtalo de nuevo.",
+    "retry": "Reintentar",
+    "language": "Idioma",
+    "theme": "Cambiar tema",
+    "exit": "Salir de la configuración",
+    "progress": "Progreso",
+    "checking": "Comprobando el entorno…",
+    "runtimeVersion": "Node.js recomendado: {{version}}; rangos verificados: {{ranges}}",
+    "recheck": "Comprobar de nuevo",
+    "installGuide": "Guía oficial de instalación",
+    "discovering": "Comprobando Agents locales…",
+    "discovered": "{{count}} Agents disponibles detectados",
+    "noAgents": "No se detectó ningún Agent instalado. Instala cualquier Agent y vuelve a detectar.",
+    "deferHint": "Puedes entrar en la app ahora y completar la configuración del Agent más tarde en Ajustes.",
+    "defaultAgent": "Agent predeterminado",
+    "chooseAgent": "Elige un Agent disponible",
+    "defaultModel": "Modelo predeterminado",
+    "chooseModel": "Elige un modelo",
+    "providerDefault": "Este Agent utiliza el modelo predeterminado del proveedor.",
+    "checkingModel": "Leyendo la configuración del modelo…",
+    "permission": "Modo de permisos",
+    "choosePermission": "Elige un modo de permisos",
+    "preview": "Revisar cambios",
+    "previewSummary": "Actualizar {{slots}} configuraciones de ejecución en {{count}} workflows integrados.",
+    "slots": "{{count}} configuraciones",
+    "loadMore": "Cargar más",
+    "back": "Atrás",
+    "help": "Ayuda",
+    "skipGit": "Omitir Git por ahora",
+    "setUpLater": "Configurar más tarde",
+    "next": "Siguiente",
+    "apply": "Aplicar y finalizar",
+    "review": "Vista previa",
+    "repairHint": "Sigue la guía del proveedor para instalar o iniciar sesión y comprueba de nuevo.",
+    "settingsTitle": "Configuración y flujos de trabajo",
+    "rerunTitle": "Configuración inicial",
+    "rerunDescription": "Vuelve a comprobar Git, el entorno de ejecución y los Agent disponibles en este equipo.",
+    "defaultsTitle": "Flujos de trabajo predeterminados",
+    "defaultsDescription": "Configura el Agent, el modelo y los permisos de los flujos de trabajo integrados sin modificar los personalizados.",
+    "configureDefaults": "Configurar valores predeterminados",
+    "rerun": "Repetir configuración",
+    "npxUnavailable": "Los Agents que se inician con npx no están disponibles por ahora. Los demás Agents se pueden seguir detectando.",
+    "allUnavailable": "Los Agents detectados no están disponibles. Consulta los motivos a continuación.",
+    "actualNode": "Node.js en uso {{version}}: {{path}}",
+    "unavailable": {
+      "title": "Agents no disponibles: {{count}}",
+      "runtimeRequired": "Requiere npm/npx",
+      "doctorFailed": "El diagnóstico falló: {{reason}}",
+      "nodeVersionHint": "Node.js {{version}} está fuera del rango verificado. Se recomienda instalar {{recommended}}.",
+      "runtimeHint": "El entorno tiene problemas que pueden impedir que este Agent se inicie."
+    },
+    "steps": {
+      "git": "Git",
+      "runtime": "Entorno",
+      "agent": "Agent"
+    },
+    "titles": {
+      "git": "Preparar Git",
+      "runtime": "Comprobar el entorno",
+      "agent": "Conecta un Agent y elige el modelo predeterminado"
+    },
+    "descriptions": {
+      "git": "Git proporciona control de versiones. Puedes instalarlo más tarde.",
+      "runtime": "Algunos Agents se inician con npx y necesitan Node.js, npm y npx. Los demás Agents no se ven afectados.",
+      "agent": "Los Agents disponibles se guardan automáticamente. Elige el modelo predeterminado, revisa y aplícalo a los workflows integrados."
+    },
+    "status": {
+      "ready": "Listo",
+      "missing": "No instalado",
+      "unsupported": "Versión no compatible",
+      "unverified": "Versión no verificada",
+      "incompatible": "Entorno inconsistente",
+      "failed": "Error de comprobación",
+      "timeout": "Tiempo agotado",
+      "cancelled": "Cancelado",
+      "skipped": "Omitido",
+      "pending": "Sin comprobar",
+      "checking": "Comprobando",
+      "warning": "Advertencia"
+    },
+    "errors": {
+      "setup": {
+        "agent-preparation-required": "Sigue la guía del proveedor para instalar o iniciar sesión y comprueba de nuevo.",
+        "probe-failed": "La comprobación falló. Vuelve a comprobar.",
+        "probe-cancelled": "Se canceló la comprobación. Vuelve a comprobar para continuar.",
+        "environment-check-required": "Completa primero la comprobación del entorno de ejecución.",
+        "configuration-conflict": "La configuración cambió en otro lugar. Comprueba los Agents y revisa los cambios actuales.",
+        "preview-stale": "El modelo seleccionado o los Workflows integrados cambiaron. Vuelve a previsualizar los cambios.",
+        "agent-unavailable": "Este Agent ya no está disponible. Compruébalo de nuevo o elige otro Agent.",
+        "model-config-invalid": "Las opciones del modelo ya no son válidas. Selecciona el modelo de nuevo.",
+        "model-selection-required": "Selecciona un modelo antes de continuar.",
+        "permission-selection-required": "Selecciona un modo de permisos antes de continuar.",
+        "git-decision-required": "Instala una versión compatible de Git o elige omitir Git.",
+        "recovery-required": "No se pudo recuperar el guardado anterior. Restaura el acceso a la carpeta de ajustes y reinicia.",
+        "executable-path-invalid": "Selecciona un ejecutable existente con su ruta completa.",
+        "commit-failed": "No se pudo guardar. Comprueba los permisos y el espacio libre, y reintenta.",
+        "operation-id-invalid": "La solicitud de guardado no es válida. Vuelve a previsualizar los cambios.",
+        "templates-initialization-required": "Los Workflows integrados no están inicializados. Comprueba los Agents de nuevo."
+      }
+    },
+    "gitVersion": "Se requiere Git {{version}} o posterior.",
+    "previousBindings": "Configuraciones actuales que se reemplazarán",
+    "previousBinding": "{{slot}}: {{agent}} / {{model}}",
+    "defaultModelLabel": "Predeterminado del proveedor",
+    "runtimeBlocked": "La comprobación del entorno no se superó",
+    "detectionFailed": "Falló la detección de Agent. Vuelve a intentarlo.",
+    "recheckRuntime": "Comprobar el entorno de nuevo",
+    "viewRuntime": "Ver entorno",
+    "environmentHelp": {
+      "missing": "No se encontró esta herramienta. Sigue la guía oficial de instalación y vuelve a comprobar.",
+      "unsupported": "Instala una versión compatible siguiendo la guía oficial y vuelve a comprobar.",
+      "unverified": "Esta versión estable está fuera de los rangos verificados actualmente, pero la cadena de herramientas detectada es compatible, así que puedes continuar. Siempre que sea posible, usa una versión LTS verificada.",
+      "incompatible": "La combinación de entorno detectada es incompatible. Revisa las rutas de instalación y vuelve a intentarlo.",
+      "failed": "No se pudo completar la comprobación. Revisa la ruta del ejecutable, los permisos de acceso y la instalación y vuelve a intentarlo.",
+      "timeout": "Se agotó el tiempo de comprobación. Reintenta; si persiste, comprueba si la herramienta se inicia correctamente.",
+      "cancelled": "Se canceló la comprobación. Vuelve a comprobar para continuar."
+    },
+    "environmentReasons": {
+      "probe-unavailable": "No se pudo confirmar el entorno realmente utilizado. Revisa la instalación y vuelve a intentarlo.",
+      "node-mismatch": "Se utilizó otra instalación de Node.js. Esperada: {{expectedNodePath}}; actual: {{actualNodePath}}.",
+      "node-version-mismatch": "Las versiones de Node.js difieren. Esperada: {{expectedVersion}}; actual: {{actualVersion}}.",
+      "npm-metadata-missing": "No se pudieron confirmar los metadatos de instalación de npm. Repara la instalación de Node.js/npm y vuelve a comprobar.",
+      "npm-engines-incompatible": "Este npm no admite el Node.js actual. Requisito: {{nodeRange}}.",
+      "npm-version-mismatch": "La información de versión de npm difiere. Salida: {{expectedVersion}}; paquete: {{actualVersion}}.",
+      "npm-package-mismatch": "npm y npx pertenecen a instalaciones distintas. npm: {{expectedNpmRoot}}; esta herramienta: {{actualNpmRoot}}."
+    }
+  },
+  "multica": {
+    "taskManagement": {
+      "title": "Requisitos",
+      "source": {
+        "label": "Origen de la tarea",
+        "multica": "Multica"
+      },
+      "workspace": {
+        "label": "Espacio de trabajo",
+        "remove": "Quitar espacio de trabajo",
+        "removeConfirm": "¿Quitar este espacio de trabajo? Sus requisitos ya no se mostrarán."
+      },
+      "column": {
+        "empty": "Sin tareas"
+      },
+      "account": {
+        "connected": "Conectado",
+        "switchAccount": "Cambiar cuenta",
+        "disconnect": "Desconectar"
+      }
+    },
+    "connection": {
+      "title": "Dirección de conexión",
+      "addressLabel": "Dirección de conexión",
+      "save": "Guardar",
+      "invalidUrl": "Introduce una dirección http(s) válida",
+      "restoreDefault": "Restaurar dirección predeterminada",
+      "restoring": "Restaurando…"
+    },
+    "connect": {
+      "title": "Conectar Multica",
+      "body": "A punto de conectar con:",
+      "confirm": "Conectar",
+      "connecting": "Conectando…",
+      "cancelConnect": "Cancelar conexión"
+    }
   }
 }

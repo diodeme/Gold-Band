@@ -47,6 +47,7 @@ fn run_state_with_uuid_fields() {
         current_attempt: None,
         new_rounds_opened: 0,
         pause_reason: None,
+        rerun: None,
         last_executed_node: None,
         worktree: None,
         execution: Default::default(),
@@ -76,6 +77,7 @@ fn run_state_with_last_executed_node_serde() {
         current_attempt: None,
         new_rounds_opened: 0,
         pause_reason: None,
+        rerun: None,
         last_executed_node: Some(LastExecutedNode {
             node_id: "n1".into(),
             uuid: "u1".into(),

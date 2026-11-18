@@ -9,6 +9,7 @@ import type { ComposerWorkspaceFileRef } from '@/lib/composer-context';
 
 const file: ComposerWorkspaceFileRef = {
   id: 'default:README.md',
+  source: { kind: 'workspace', projectId: 'default', relativePath: 'README.md' },
   projectId: 'default',
   relativePath: 'README.md',
   name: 'README.md',

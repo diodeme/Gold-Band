@@ -47,19 +47,26 @@ export interface ShellProps {
   onConversationAddWorkspace?: () => void;
   onConversationRemoveWorkspace?: (projectId: string) => Promise<void>;
   onConversationRetrySidebar: () => void;
-  onConversationRequestWorkspaceTasks: (projectId: string, cursor?: string | null) => void;
+  /** Rejects on failure so the auto-load sentinel can stop its chain. */
+  onConversationRequestWorkspaceTasks: (projectId: string, cursor?: string | null) => void | Promise<unknown>;
   onConversationRequestPinnedTasks: (cursor?: string | null) => void;
+  onConversationRequestRecentTasks: (cursor?: string | null) => void | Promise<unknown>;
+  /** Collapsing a sidebar list resets it to the default first page. */
+  onConversationResetWorkspaceTaskPage?: (projectId: string) => void;
+  onConversationResetRecentTaskPage?: () => void;
   onConversationRequestTaskRuns: (task: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>, cursor?: string | null) => void;
   activeWorkspaceId?: string | null;
   defaultExpandedWorkspaceId?: string | null;
   workspaceRevealRequest?: ConversationSidebarWorkspaceRevealRequest | null;
+  onConversationRetryReveal?: () => void;
+  onConversationRevealHandled?: (requestId: number) => void;
   conversationTaskUuid?: string | null;
   workLocation?: SessionWorkLocationVm | null;
   conversationWorkspaceStore: ConversationWorkspaceStore;
   children: React.ReactNode;
 }
 
-export function Shell({ uiMode, active, conversationPage, conversationSidebar, showMulticaTaskManagement, appName, feedbackEnabled, platform, windowFrameStyle = 'native-compositor', appConfig, browserPreferences, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleSidebar, onOpenPersonalAnalytics, onOpenReleaseNotes, titleBarUpdateAction, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationPauseRun, onConversationRenameTask, onConversationDeleteTask, onConversationSetResident, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, onConversationRetrySidebar, onConversationRequestWorkspaceTasks, onConversationRequestPinnedTasks, onConversationRequestTaskRuns, activeWorkspaceId, defaultExpandedWorkspaceId, workspaceRevealRequest, conversationTaskUuid, workLocation, conversationWorkspaceStore, children }: ShellProps) {
+export function Shell({ onConversationRevealHandled: propsRevealHandled, onConversationRetryReveal: propsRetryReveal, uiMode, active, conversationPage, conversationSidebar, showMulticaTaskManagement, appName, feedbackEnabled, platform, windowFrameStyle = 'native-compositor', appConfig, browserPreferences, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleSidebar, onOpenPersonalAnalytics, onOpenReleaseNotes, titleBarUpdateAction, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationPauseRun, onConversationRenameTask, onConversationDeleteTask, onConversationSetResident, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, onConversationRetrySidebar, onConversationRequestWorkspaceTasks, onConversationRequestPinnedTasks, onConversationRequestRecentTasks, onConversationResetWorkspaceTaskPage, onConversationResetRecentTaskPage, onConversationRequestTaskRuns, activeWorkspaceId, defaultExpandedWorkspaceId, workspaceRevealRequest, conversationTaskUuid, workLocation, conversationWorkspaceStore, children }: ShellProps) {
   useThemeWallpaperSurface();
   if (uiMode === 'conversation') {
     return (
@@ -93,10 +100,15 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, s
         onRetryBootstrap={onConversationRetrySidebar}
         onRequestWorkspaceTasks={onConversationRequestWorkspaceTasks}
         onRequestPinnedTasks={onConversationRequestPinnedTasks}
+        onRequestRecentTasks={onConversationRequestRecentTasks}
+        onResetWorkspaceTaskPage={onConversationResetWorkspaceTaskPage}
+        onResetRecentTaskPage={onConversationResetRecentTaskPage}
         onRequestTaskRuns={onConversationRequestTaskRuns}
         activeWorkspaceId={activeWorkspaceId}
         defaultExpandedWorkspaceId={defaultExpandedWorkspaceId}
         workspaceRevealRequest={workspaceRevealRequest}
+        onRetryReveal={propsRetryReveal}
+        onRevealHandled={propsRevealHandled}
         conversationTaskUuid={conversationTaskUuid}
         workLocation={workLocation}
         conversationWorkspaceStore={conversationWorkspaceStore}

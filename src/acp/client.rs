@@ -1756,6 +1756,12 @@ pub struct AcpPromptRun {
     pub total_tokens: Option<u64>,
 }
 
+impl AcpPromptRun {
+    pub fn terminal_status(&self) -> crate::provider::ProviderRunStatus {
+        crate::provider::classify_acp_prompt_run(self).status
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpPromptFailure {
@@ -1787,6 +1793,35 @@ impl AcpPromptTerminalState {
     fn reset(&mut self) {
         self.last_provider_error = None;
         self.terminal_failure = None;
+    }
+
+    fn observe_prompt_result(&mut self, result: &Value) {
+        let Some(error) = result
+            .get("_meta")
+            .and_then(|meta| meta.get("codebuddy.ai/errorMessage"))
+        else {
+            return;
+        };
+        let error = match error {
+            Value::String(text) if !text.trim().is_empty() => {
+                serde_json::from_str::<Value>(text).unwrap_or_else(|_| error.clone())
+            }
+            Value::Object(object) if !object.is_empty() => error.clone(),
+            _ => return,
+        };
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .or_else(|| error.as_str())
+            .filter(|message| !message.trim().is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| error.to_string());
+        self.terminal_failure = Some(AcpPromptFailure {
+            code: "codebuddy.prompt-error".to_string(),
+            message,
+            details: None,
+            raw: result.clone(),
+        });
     }
 
     fn observe_session_update(&mut self, update: &Value) {
@@ -3409,7 +3444,7 @@ fn run_prompt_inner(
     commit_runtime_control_prompt(&runtime.paths.attempt_dir, prompt)?;
     runtime.control.mark_accepted();
     publish_prompt_accepted(prompt_accepted, &prompt_turn.id)?;
-    runtime.write_session("running", restored, None, capabilities.clone())?;
+    runtime.write_session("running", restored, None, capabilities.clone(), None)?;
     if acp_session_title_refresh_enabled {
         runtime.refresh_session_title_and_persist(
             &workspace_dir,
@@ -3529,7 +3564,47 @@ fn run_prompt_inner(
             return Err(error);
         }
     };
-    if let Some(failure) = terminal_failure.as_ref() {
+    let run = AcpPromptRun {
+        session_id,
+        adapter_id: runtime.connection.adapter().adapter_id.clone(),
+        adapter_display_name: runtime.connection.adapter().display_name.clone(),
+        stop_reason: stop_reason.clone(),
+        terminal_failure,
+        output: runtime.prompt_output.output.clone(),
+        restored,
+        used_tokens: runtime.usage.context.confirmed_used,
+        context_window_size: runtime.usage.context.window_size,
+        total_cost_usd: runtime.usage.total_cost_usd,
+        input_tokens: runtime.usage.latest_prompt.input_tokens,
+        output_tokens: runtime.usage.latest_prompt.output_tokens,
+        cached_read_tokens: runtime.usage.latest_prompt.cached_read_tokens,
+        cached_write_tokens: runtime.usage.latest_prompt.cached_write_tokens,
+        total_tokens: runtime.usage.latest_prompt.total_tokens,
+    };
+    let terminal = crate::provider::classify_acp_prompt_run(&run);
+    let status = if status != "cancelled"
+        && terminal.status == crate::provider::ProviderRunStatus::Failure
+    {
+        "failed"
+    } else {
+        status
+    };
+    let turn_error = if status == "failed" {
+        Some(terminal.runtime_error.unwrap_or_else(|| {
+            manual_runtime_error_info(
+                RuntimeErrorDomain::Provider,
+                "acp.turn-execution-failed",
+                format!(
+                    "ACP prompt ended with stop reason `{}`",
+                    stop_reason.as_deref().unwrap_or_default()
+                ),
+                json!({ "stopReason": stop_reason }),
+            )
+        }))
+    } else {
+        None
+    };
+    if let Some(failure) = run.terminal_failure.as_ref() {
         runtime.mark_prompt_terminal_failure(&prompt_turn, failure)?;
         append_diagnostic_best_effort(
             &runtime.paths.diagnostics,
@@ -3562,7 +3637,13 @@ fn run_prompt_inner(
         .interrupt_active_context_compaction(stop_reason.as_deref().unwrap_or("prompt_finished"))?;
     runtime.control.mark_stopped();
     runtime.settle_foreground_turn_tools();
-    runtime.write_session(status, restored, stop_reason.clone(), capabilities)?;
+    runtime.write_session(
+        status,
+        restored,
+        stop_reason.clone(),
+        capabilities,
+        turn_error,
+    )?;
     if let Some(session_update) = session_update {
         let _ = session_update();
     }
@@ -3576,23 +3657,6 @@ fn run_prompt_inner(
             Some(json!({ "error": error.to_string(), "turnId": prompt_turn.id })),
         );
     }
-    let run = AcpPromptRun {
-        session_id,
-        adapter_id: runtime.connection.adapter().adapter_id.clone(),
-        adapter_display_name: runtime.connection.adapter().display_name.clone(),
-        stop_reason,
-        terminal_failure,
-        output: runtime.prompt_output.output.clone(),
-        restored,
-        used_tokens: runtime.usage.context.confirmed_used,
-        context_window_size: runtime.usage.context.window_size,
-        total_cost_usd: runtime.usage.total_cost_usd,
-        input_tokens: runtime.usage.latest_prompt.input_tokens,
-        output_tokens: runtime.usage.latest_prompt.output_tokens,
-        cached_read_tokens: runtime.usage.latest_prompt.cached_read_tokens,
-        cached_write_tokens: runtime.usage.latest_prompt.cached_write_tokens,
-        total_tokens: runtime.usage.latest_prompt.total_tokens,
-    };
     if cancellation.drain_timed_out {
         // The adapter process may host other reusable sessions, so keep the
         // process alive while quarantining only this undrained session.
@@ -3634,6 +3698,7 @@ fn finalize_unaccepted_prompt_interruption(
         restored,
         Some(stop_reason.to_string()),
         capabilities,
+        None,
     );
     if !runtime_owned_session_route {
         // The continued id above is a durable identity only. This runtime did
@@ -5850,7 +5915,7 @@ impl<'a> AcpRuntime<'a> {
         capabilities: &Value,
     ) {
         self.refresh_session_title_best_effort(workspace_dir);
-        let _ = self.write_session(status, restored, stop_reason, capabilities.clone());
+        let _ = self.write_session(status, restored, stop_reason, capabilities.clone(), None);
     }
 
     fn record_user_prompt_event(
@@ -6098,6 +6163,7 @@ impl<'a> AcpRuntime<'a> {
                 capabilities,
             );
         }
+        self.prompt_terminal.observe_prompt_result(&result);
         Ok(result
             .get("stopReason")
             .and_then(Value::as_str)
@@ -7837,6 +7903,7 @@ impl<'a> AcpRuntime<'a> {
         restored: bool,
         stop_reason: Option<String>,
         capabilities: Value,
+        turn_error: Option<RuntimeErrorInfo>,
     ) -> Result<()> {
         self.flush_pending_timeline_patches(None)?;
         self.flush_pending_live_updates()?;
@@ -7844,7 +7911,8 @@ impl<'a> AcpRuntime<'a> {
         for store in self.branch_timeline_stores.values_mut() {
             store.force_checkpoint()?;
         }
-        let metadata = self.session_metadata(status, restored, stop_reason, capabilities);
+        let mut metadata = self.session_metadata(status, restored, stop_reason, capabilities);
+        metadata.turn_error = turn_error;
         if let Some(owner) = self.lifecycle_owner.as_ref() {
             // Losing the exact claim means this runtime is stale, not that the
             // currently canonical turn failed.
@@ -12451,6 +12519,41 @@ mod tests {
     }
 
     #[test]
+    fn prompt_result_error_extension_preserves_structured_and_plain_errors() {
+        for error in [
+            json!({"code":-32003,"message":"Quota exceeded"}),
+            json!("Quota exceeded: incomplete provider JSON {"),
+        ] {
+            let result = json!({
+                "stopReason":"end_turn",
+                "_meta":{"codebuddy.ai/errorMessage": error, "codebuddy.ai/traceId":"trace"}
+            });
+            let mut terminal = AcpPromptTerminalState::default();
+            terminal.observe_prompt_result(&result);
+            let failure = terminal
+                .terminal_failure
+                .expect("explicit error extension must fail");
+            assert!(failure.message.starts_with("Quota exceeded"));
+            assert_eq!(failure.raw, result);
+        }
+    }
+
+    #[test]
+    fn prompt_result_without_error_extension_does_not_guess_failure_from_text() {
+        for result in [
+            json!({"stopReason":"end_turn"}),
+            json!({"stopReason":"end_turn", "_meta":{"codebuddy.ai/errorMessage":" "}}),
+            json!({"stopReason":"end_turn", "_meta":{"codebuddy.ai/errorMessage":null}}),
+            json!({"stopReason":"end_turn", "_meta":{"codebuddy.ai/errorMessage":{}}}),
+            json!({"stopReason":"end_turn", "_meta":{"another/errorMessage":"Quota exceeded"}}),
+        ] {
+            let mut terminal = AcpPromptTerminalState::default();
+            terminal.observe_prompt_result(&result);
+            assert!(terminal.terminal_failure.is_none());
+        }
+    }
+
+    #[test]
     fn prompt_terminal_state_promotes_system_error_after_retry_signal() {
         let mut terminal = AcpPromptTerminalState::default();
         terminal.observe_session_update(&json!({
@@ -15008,6 +15111,24 @@ do {
         assert_upgraded_acp_terminal_recovery("cancel");
     }
 
+    #[test]
+    fn prompt_response_codebuddy_quota_error_is_persisted_and_recoverable() {
+        assert_upgraded_acp_terminal_recovery("codebuddy-quota");
+    }
+
+    #[test]
+    fn prompt_response_failures_do_not_publish_completed_turns() {
+        for scenario in [
+            "refusal",
+            "error",
+            "failure",
+            "future_reason",
+            "missing-reason",
+        ] {
+            assert_upgraded_acp_terminal_recovery(scenario);
+        }
+    }
+
     fn assert_upgraded_acp_terminal_recovery(scenario: &str) {
         use crate::acp::events::{
             AcpPromptSubmission, AcpTurnExecutionClaim, admit_session_turn_for_execution,
@@ -15099,10 +15220,10 @@ do {
                 );
                 let expected_status = if turn == 2 {
                     "completed"
-                } else if scenario == "auth" {
-                    "failed"
-                } else {
+                } else if scenario == "cancel" {
                     "cancelled"
+                } else {
+                    "failed"
                 };
                 if turn == 1 && scenario == "auth" {
                     let error = result.err().expect("AuthRequired must fail the turn");
@@ -15130,6 +15251,45 @@ do {
                         terminal["turnError"]["code"]["code"],
                         "provider.auth-required"
                     );
+                }
+                if turn == 1 && scenario != "cancel" && scenario != "auth" {
+                    assert!(terminal["turnError"].is_object());
+                    let failed = published.borrow();
+                    let failed: Vec<_> = failed
+                        .iter()
+                        .filter(|value| value["latestTurnStatus"] == "failed")
+                        .collect();
+                    assert!(!failed.is_empty());
+                    assert!(
+                        failed
+                            .iter()
+                            .all(|value| value["turnError"] == terminal["turnError"])
+                    );
+                    assert!(
+                        !published
+                            .borrow()
+                            .iter()
+                            .any(|value| value["latestTurnStatus"] == "completed")
+                    );
+                    if scenario == "codebuddy-quota" {
+                        assert_eq!(
+                            terminal["turnError"]["code"]["code"],
+                            "provider.quota-insufficient"
+                        );
+                        assert!(
+                            terminal["turnError"]["diagnostic"]
+                                .as_str()
+                                .unwrap()
+                                .contains("Credits Rate Limit exceeded")
+                        );
+                        assert_eq!(terminal["turnError"]["recovery"], "manual");
+                        assert!(terminal["turnError"]["retryPolicy"].is_null());
+                        assert!(
+                            terminal["turnError"]["raw"]
+                                .to_string()
+                                .contains("fixture-trace")
+                        );
+                    }
                 }
                 if turn == 2 {
                     assert!(terminal["turnError"].is_null());
@@ -15220,6 +15380,24 @@ do {
                     if scenario == "auth" {
                         // ACP AuthRequired emitted by Claude 0.87.0 and Codex 2.1.1.
                         json!({"error":{"code":-32000,"message":"Authentication required"}})
+                    } else if scenario == "codebuddy-quota" {
+                        json!({"result":{
+                            "stopReason":"refusal",
+                            "_meta": {
+                                "codebuddy.ai/traceId":"fixture-trace",
+                                "codebuddy.ai/errorMessage": json!({
+                                    "code":-32003,
+                                    "message":"Quota exceeded: 500 StreamWithSecAPI Stream error, status: 429, resp: Credits Rate Limit exceeded"
+                                }).to_string()
+                            }
+                        }})
+                    } else if scenario != "cancel" {
+                        let result = if scenario == "missing-reason" {
+                            json!({})
+                        } else {
+                            json!({"stopReason":scenario})
+                        };
+                        json!({"result": result})
                     } else {
                         pending_prompt = Some(frame["id"].clone());
                         update(

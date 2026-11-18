@@ -112,18 +112,22 @@ ACP prompt 的协议结束与 Gold Band Provider 执行结果是两个不同领�
 
 - `stopReason` 只描述 `session/prompt` turn 为什么结束，不能单独证明 worker 成功。
 - `session/update` 中的 fatal session 状态属于本轮 prompt 生命周期证据，必须进入 Provider 返回值，不能只落入 timeline 或 diagnostics。
-- Provider 必须在一个集中归约函数中同时消费 `stopReason` 与结构化 terminal failure，不能让普通 worker、AI-DYNAMIC bootstrap/worker/merge/acceptance 各自推断。
+- ACP turn snapshot 与 Provider 必须复用同一个集中归约函数，同时消费 `stopReason` 与结构化 terminal failure，不能让 Direct、普通 worker、AI-DYNAMIC bootstrap/worker/merge/acceptance 各自推断。归约失败不得先发布 `completed`；必须将 `latestTurnStatus=failed` 与本轮 `turnError` 原子写入后再通知 UI。
+- 桌面命令的 turn 完成事件、通知和队列派发结果也必须消费同一归约；禁止把非取消的 prompt response 默认当作 Completed，以免失败后继续自动派发队列或发送成功通知。
+- `session/prompt.result._meta["codebuddy.ai/errorMessage"]` 是 CodeBuddy 的显式错误扩展，允许 JSON 字符串或对象；非空但无法解析的文本仍保留为原始诊断。扩展按字段识别，不按 Agent ID 推断，也不扫描任意元数据或正文猜测失败。错误进入既有 terminal failure，保留完整 result（含上游 code、traceId）用于排障；额度错误复用 `provider.quota-insufficient` 归一化，终局错误只能由用户显式重试。
 
 归约优先级固定为：
 
 1. 本轮出现 terminal failure，例如 Codex `_meta.codex.threadStatus.type = systemError`，无论 prompt response 是否返回 `end_turn`，都映射为 `ProviderRunStatus::Failure + RuntimeErrorInfo`。
 2. `cancelled`、`interrupted`、`max_turn_requests`、`max_tokens` 映射为 `Interrupted`。
 3. 等待用户输入和权限请求映射为对应暂停状态。
-4. `refusal` 是明确业务拒绝，映射为 `Failure`，但不伪装成 provider runtime error。
+4. 没有结构化 terminal failure 的 `refusal` 是明确业务拒绝，映射为 `Failure`，但不伪装成 provider runtime error；ACP turn 仍标为 `failed` 并提供通用结构化原因。带错误扩展的 `refusal` 优先按第 1 条保留真实服务错误。
 5. 只有明确正常结束的 `end_turn` 且不存在 terminal failure 时才能映射为 `Success`。
 6. 缺失或未知 `stopReason` 必须按 ACP 协议异常返回结构化 `RuntimeErrorInfo`，禁止默认成功。
 
 Provider 只有在归约结果为 `Success` 或可接受中断结果时才提取 output artifact。Provider runtime error 必须先于 artifact/DSL 校验返回给 runtime；AI-DYNAMIC 不得把 provider 服务故障当成 proposal 格式错误进入 repair。
+
+错误 UI 继续只消费 canonical lifecycle / `turnError`，不读取 Raw frame 补推断；新一轮成功后清除旧错误，保留成功追问不再显示过期错误的既有行为。
 
 ### Codex ACP 实现约束
 

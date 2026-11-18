@@ -1,5 +1,13 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-11-18 CodeBuddy 错误扩展与 ACP 失败终态修复
+
+- 根因：CodeBuddy 将额度错误放在 prompt result 的 `codebuddy.ai/errorMessage` 扩展内并返回 `refusal`；ACP 只提取 stopReason，且成功收到协议响应就可能发布 completed，与 Provider 的失败归约不一致。
+- 实现：按显式扩展字段接入既有 terminal failure，保留原始错误和 trace；ACP snapshot 和桌面命令的完成事件、通知与队列派发均复用 Provider 终态归约，在同一次持久化中提交 failed 与 turnError，再通知 UI。普通 refusal 保留业务失败语义，不改为 Provider runtime error；成功追问仍清除旧错误。
+- 红绿证据：两个协议回归在修复前均失败于 snapshot 实际为 completed、期望 failed；桌面完成事件回归在修复前失败于缺失 stopReason 被判为 Completed。修复后相同测试转绿，固定错误详情与失败状态原子发布、显式追问恢复、error/failure/未知或缺失 stopReason、原始 trace 保留，以及普通 refusal 不被误当成 Provider runtime error。扩展对象、非 JSON 文本、空扩展和不相关元数据亦有回归。
+- 验收：`cargo test -p gold-band --lib -j 1 -- acp::client::tests provider::tests` 278 项通过、6 项按设计忽略；`cargo test -p gold-band-desktop --bin gold-band-desktop commands::tests::acp_turn_ -j 1` 3 项通过；`npx vitest run --config web/vitest.config.ts web/tests/acp-runtime-continue-submit.test.tsx web/tests/acp-chat-events.test.ts` 141 项通过；`npm run web:build`、`cargo fmt --all -- --check` 与 `git diff --check` 通过。Windows 附件测试使用规范长路径 TEMP/TMP，避免 8.3 短路径夹具差异。内置浏览器在生产构建的既有失败会话 fixture 验证普通宽度、720px 窄窗口和恢复宽度的错误横幅，以及成功追问后清除旧错误；额度原文由 DOM 回归验证。测试页面和本轮测试进程已清理；未连接真实 CodeBuddy 额度服务或启动 EXE 手工验收。
+- 过度设计与性能评审：复用现有错误类型、生命周期身份、原子 snapshot 和 UI 横幅，不新增依赖、持久字段、缓存、队列或并发机制。每轮只解析显式错误扩展一次，不扫描历史或增加网络请求，刷新范围仍为所属会话。
+
 ## 2026-11-16 ACP 认证错误与缺失环境变量修复
 
 - 根因：`authenticate` 返回的任何错误都被改写成 `provider.auth-required`，导致超时、取消和 transport 中断丢失原始结构化原因；认证方法选择忽略 ACP `AuthEnvVar.optional`；前端未消费 `methods/missingEnv`，用户看不到需要配置的具体变量。

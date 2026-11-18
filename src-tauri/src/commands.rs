@@ -822,11 +822,12 @@ fn admit_conversation_prompt_turn(
 }
 
 fn acp_turn_outcome(run: &client::AcpPromptRun) -> AcpTurnOutcome {
-    acp_turn_outcome_for_stop_reason(run.stop_reason.as_deref())
-}
-
-fn acp_turn_outcome_for_stop_reason(stop_reason: Option<&str>) -> AcpTurnOutcome {
-    match stop_reason
+    if run.terminal_status() == gold_band::provider::ProviderRunStatus::Failure {
+        return AcpTurnOutcome::Failed;
+    }
+    match run
+        .stop_reason
+        .as_deref()
         .map(|reason| reason.trim().to_ascii_lowercase().replace('_', "-"))
         .as_deref()
     {
@@ -6837,8 +6838,7 @@ pub async fn get_conversation_turn_index(
         branch_id.unwrap_or_else(|| gold_band::acp::branches::ROOT_BRANCH_ID.to_string());
     // The branch id feeds a filesystem path join; validate it exactly like the
     // other timeline commands so a crafted id cannot escape the attempt dir.
-    gold_band::acp::branches::validate_conversation_branch_id(&branch_id)
-        .map_err(command_error)?;
+    gold_band::acp::branches::validate_conversation_branch_id(&branch_id).map_err(command_error)?;
     spawn_blocking_command(move || {
         let attempt_dir = match (outer_node_id.as_deref(), outer_attempt_id.as_deref()) {
             (Some(outer_node), Some(outer_attempt)) => app.paths.dynamic_node_attempt_dir(
@@ -6862,15 +6862,17 @@ pub async fn get_conversation_turn_index(
         // lock for the lean parse.
         let events = gold_band::acp::events::load_timeline_items_without_hydration(&timeline_path)
             .map_err(|error| acp_storage_query_error(error, "acp.session-query-failed"))?;
-        Ok(gold_band::acp::events::conversation_turn_index_after(&events, after_seq)
-            .into_iter()
-            .map(|entry| ConversationTurnIndexEntryVm {
-                seq: entry.seq,
-                timestamp: entry.timestamp,
-                kind: entry.kind,
-                prompt_preview: entry.prompt_preview,
-            })
-            .collect::<Vec<_>>())
+        Ok(
+            gold_band::acp::events::conversation_turn_index_after(&events, after_seq)
+                .into_iter()
+                .map(|entry| ConversationTurnIndexEntryVm {
+                    seq: entry.seq,
+                    timestamp: entry.timestamp,
+                    kind: entry.kind,
+                    prompt_preview: entry.prompt_preview,
+                })
+                .collect::<Vec<_>>(),
+        )
     })
     .await
 }
@@ -15738,27 +15740,70 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    fn prompt_run_for_outcome(stop_reason: Option<&str>) -> client::AcpPromptRun {
+        client::AcpPromptRun {
+            session_id: "fixture-session".into(),
+            adapter_id: "fixture-agent".into(),
+            adapter_display_name: "Fixture".into(),
+            stop_reason: stop_reason.map(str::to_string),
+            terminal_failure: None,
+            output: client::AcpPromptOutput::default(),
+            restored: false,
+            used_tokens: None,
+            context_window_size: None,
+            total_cost_usd: None,
+            input_tokens: None,
+            output_tokens: None,
+            cached_read_tokens: None,
+            cached_write_tokens: None,
+            total_tokens: None,
+        }
+    }
+
+    #[test]
+    fn acp_turn_outcome_preserves_provider_failures() {
+        let mut run = prompt_run_for_outcome(None);
+        for reason in [
+            None,
+            Some("refusal"),
+            Some("error"),
+            Some("failure"),
+            Some("future_reason"),
+        ] {
+            run.stop_reason = reason.map(str::to_string);
+            assert_eq!(acp_turn_outcome(&run), AcpTurnOutcome::Failed, "{reason:?}");
+        }
+        run.stop_reason = Some("end_turn".into());
+        run.terminal_failure = Some(client::AcpPromptFailure {
+            code: "fixture.error".into(),
+            message: "Quota exceeded".into(),
+            details: None,
+            raw: serde_json::json!({}),
+        });
+        assert_eq!(acp_turn_outcome(&run), AcpTurnOutcome::Failed);
+    }
+
     #[test]
     fn acp_turn_outcome_distinguishes_user_cancel_from_transport_failure() {
         assert_eq!(
-            acp_turn_outcome_for_stop_reason(Some("cancelled")),
+            acp_turn_outcome(&prompt_run_for_outcome(Some("cancelled"))),
             AcpTurnOutcome::Cancelled
         );
         assert_eq!(
-            acp_turn_outcome_for_stop_reason(Some("canceled")),
+            acp_turn_outcome(&prompt_run_for_outcome(Some("canceled"))),
             AcpTurnOutcome::Cancelled
         );
         assert_eq!(
-            acp_turn_outcome_for_stop_reason(Some("interrupted")),
+            acp_turn_outcome(&prompt_run_for_outcome(Some("interrupted"))),
             AcpTurnOutcome::Failed
         );
         assert_eq!(
-            acp_turn_outcome_for_stop_reason(Some("end_turn")),
+            acp_turn_outcome(&prompt_run_for_outcome(Some("end_turn"))),
             AcpTurnOutcome::Completed
         );
         assert_eq!(
-            acp_turn_outcome_for_stop_reason(None),
-            AcpTurnOutcome::Completed
+            acp_turn_outcome(&prompt_run_for_outcome(None)),
+            AcpTurnOutcome::Failed
         );
     }
 

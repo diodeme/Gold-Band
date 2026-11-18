@@ -726,9 +726,9 @@ pub enum ProviderRunStatus {
 }
 
 #[derive(Debug)]
-struct ProviderTerminalOutcome {
-    status: ProviderRunStatus,
-    runtime_error: Option<RuntimeErrorInfo>,
+pub(crate) struct ProviderTerminalOutcome {
+    pub(crate) status: ProviderRunStatus,
+    pub(crate) runtime_error: Option<RuntimeErrorInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2173,7 +2173,7 @@ impl ProviderAdapter for AcpProvider {
     }
 }
 
-fn classify_acp_prompt_run(run: &client::AcpPromptRun) -> ProviderTerminalOutcome {
+pub(crate) fn classify_acp_prompt_run(run: &client::AcpPromptRun) -> ProviderTerminalOutcome {
     if let Some(failure) = &run.terminal_failure {
         let raw = Some(serde_json::json!({
             "adapterId": run.adapter_id,
@@ -5578,6 +5578,13 @@ mod tests {
         let outcome = classify_acp_prompt_run(&run);
 
         assert_eq!(outcome.status, ProviderRunStatus::Success);
+        assert!(outcome.runtime_error.is_none());
+    }
+
+    #[test]
+    fn refusal_without_terminal_error_remains_a_business_failure() {
+        let outcome = classify_acp_prompt_run(&acp_prompt_run(Some("refusal"), None));
+        assert_eq!(outcome.status, ProviderRunStatus::Failure);
         assert!(outcome.runtime_error.is_none());
     }
 

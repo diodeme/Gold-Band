@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.0](https://github.com/diodeme/Gold-Band/compare/v0.20.0...v0.21.0) (2026-11-18)
+
+
+### Features
+
+* **desktop:** integrate onboarding and workflow enhancements ([197b020](https://github.com/diodeme/Gold-Band/commit/197b020acff19218edfde55f40cd80ce14371f0e))
+
 ## [0.20.0](https://github.com/diodeme/Gold-Band/compare/v0.19.1...v0.20.0) (2026-11-08)
 
 

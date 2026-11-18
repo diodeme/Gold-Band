@@ -41,12 +41,27 @@ struct Segment {
 
 struct ToolState {
     name: String,
-    use_sent: bool,
+    /// 最新一版**实质性**输入快照。流式适配器先发空占位（`{}` / `{"command": ""}`）
+    /// 再补全参数，空占位不得覆盖已知输入。
+    input: Option<Value>,
+    /// `tool_use` 行已排入 outbox（或已随批次发出）。
+    use_queued: bool,
     result_sent: bool,
 }
 
+/// outbox 中的一条待发条目。
+///
+/// ACP 的工具调用是**修订快照**而非一次性完整对象，而 multica 的 `tool_use` 没有更新
+/// 语义：入队时只能占住顺序，必须**在真正发出时才冻结**该工具的最新快照——否则首个
+/// 空占位会被永久锁死，完整命令再也发不出去。
+struct OutboxEntry {
+    message: TranscriptMessage,
+    /// `Some(tool_key)`：发出时用该工具的最新输入快照覆盖 `message.input`。
+    pending_input: Option<String>,
+}
+
 pub(crate) struct Projector {
-    outbox: VecDeque<TranscriptMessage>,
+    outbox: VecDeque<OutboxEntry>,
     segment: Option<Segment>,
     /// stable item id → 已投影的字符数（live 文本是全量快照）。
     streams: HashMap<String, usize>,
@@ -183,15 +198,23 @@ impl Projector {
             let Some(front) = self.outbox.front() else {
                 break;
             };
-            let size = serde_json::to_vec(front)
+            // 待冻结的工具输入在**这一刻**定型：此前所有修订快照都已观测过。
+            let (mut message, pending_input) = (front.message.clone(), front.pending_input.clone());
+            if let Some(key) = pending_input {
+                let input = self
+                    .tools
+                    .get(&key)
+                    .and_then(|state| state.input.clone())
+                    .unwrap_or_else(|| json!({}));
+                message.input = Some(normalize_tool_input(&input));
+            }
+            let size = serde_json::to_vec(&message)
                 .map(|body| body.len())
                 .unwrap_or(0);
             if !batch.is_empty() && bytes.saturating_add(size) > MAX_BATCH_BYTES {
                 break;
             }
-            let Some(mut message) = self.outbox.pop_front() else {
-                break;
-            };
+            self.outbox.pop_front();
             message.seq = *next_seq;
             *next_seq = next_seq.saturating_add(1);
             bytes = bytes.saturating_add(size);
@@ -276,35 +299,43 @@ impl Projector {
                 name
             }
         };
+        if let Some(input) = event_tool_input(event) {
+            self.remember_input(&key, input.clone());
+        }
         let terminal = event.status.as_deref().is_some_and(is_terminal_tool_status);
 
-        let use_sent = self.tools.get(&key).is_some_and(|state| state.use_sent);
-        if !use_sent {
-            if let Some(input) = event_tool_input(event) {
-                self.mark_tool(&key, |state| state.use_sent = true);
-                self.push(TranscriptMessage::tool_use(
-                    name.clone(),
-                    normalize_tool_input(input),
-                ));
-            } else if terminal {
-                self.mark_tool(&key, |state| state.use_sent = true);
-                self.push(TranscriptMessage::tool_use(name.clone(), json!({})));
-            }
+        // `use` 每个工具调用只发一次：首个快照即占住事件顺序，输入在 drain 时冻结
+        // （见 `OutboxEntry`）。先收起进行中的文本段，保证工具行排在它之前的文本之后。
+        if !self.tools.get(&key).is_some_and(|state| state.use_queued) {
+            self.close_segment();
+            self.mark_tool(&key, |state| state.use_queued = true);
+            self.push_entry(OutboxEntry {
+                message: TranscriptMessage::tool_use(name.clone(), json!({})),
+                pending_input: Some(key.clone()),
+            });
         }
 
-        let result_sent = self.tools.get(&key).is_some_and(|state| state.result_sent);
-        if terminal && !result_sent {
-            // 结果必须排在 use 之后：没有输入也要补一条 use，保证前端能配对。
-            if !self.tools.get(&key).is_some_and(|state| state.use_sent) {
-                self.mark_tool(&key, |state| state.use_sent = true);
-                self.push(TranscriptMessage::tool_use(name.clone(), json!({})));
-            }
+        if terminal && !self.tools.get(&key).is_some_and(|state| state.result_sent) {
+            // 先落该工具之后、终态之前的文本，再发结果，保持 seq 顺序 = 事件顺序。
+            self.close_segment();
             self.mark_tool(&key, |state| state.result_sent = true);
             let output = event_tool_output(event)
                 .map(|output| truncate_chars(&sanitize_text(&output), MAX_TOOL_OUTPUT_CHARS))
                 .unwrap_or_default();
             self.push(TranscriptMessage::tool_result(name, output));
         }
+    }
+
+    /// 记住最新一版**实质性**输入快照：空占位（`{}` / `{"command": ""}`）不覆盖已知值，
+    /// 终态前的显式 `rawInput: null` 也不覆盖——multica 的 `tool_use` 一行定终身，
+    /// 宁可保留最后一次真实快照，也不回退成空占位。
+    fn remember_input(&mut self, key: &str, input: Value) {
+        let substantive = has_substantive_value(&input);
+        self.mark_tool(key, |state| {
+            if substantive || state.input.is_none() {
+                state.input = Some(input);
+            }
+        });
     }
 
     fn mark_tool(&mut self, key: &str, update: impl FnOnce(&mut ToolState)) {
@@ -340,7 +371,8 @@ impl Projector {
             key.to_string(),
             ToolState {
                 name,
-                use_sent: false,
+                input: None,
+                use_queued: false,
                 result_sent: false,
             },
         );
@@ -348,17 +380,24 @@ impl Projector {
     }
 
     fn push(&mut self, message: TranscriptMessage) {
+        self.push_entry(OutboxEntry {
+            message,
+            pending_input: None,
+        });
+    }
+
+    fn push_entry(&mut self, entry: OutboxEntry) {
         if self.outbox.len() >= MAX_OUTBOX_MESSAGES {
             // 溢出时优先丢最旧的文本行，工具行（含 use/result 配对）尽量保留。
             let evict = self
                 .outbox
                 .iter()
-                .position(|item| matches!(item.message_type, TYPE_TEXT | TYPE_THINKING))
+                .position(|item| matches!(item.message.message_type, TYPE_TEXT | TYPE_THINKING))
                 .unwrap_or(0);
             self.outbox.remove(evict);
             self.dropped_messages = self.dropped_messages.saturating_add(1);
         }
-        self.outbox.push_back(message);
+        self.outbox.push_back(entry);
     }
 }
 
@@ -417,6 +456,8 @@ fn event_tool_input(event: &AcpUiEvent) -> Option<&Value> {
         .filter(|value| value.is_object())
 }
 
+/// 工具输出提取链：agent transcript 元数据 → `rawOutput`（命令类累积输出优先取
+/// `formatted_output`）→ 顶层 `content` 文本块（非命令类结果的真实形状）。
 fn event_tool_output(event: &AcpUiEvent) -> Option<String> {
     let raw = event.raw.as_ref()?;
     if let Some(output) = agent_transcript_tool_output(raw).and_then(value_to_text) {
@@ -424,18 +465,31 @@ fn event_tool_output(event: &AcpUiEvent) -> Option<String> {
     }
     for pointer in [
         "/toolCall/rawOutput/formatted_output",
+        "/toolCall/rawOutput",
         "/toolCall/output",
+        "/toolCall/content",
         "/rawOutput/formatted_output",
+        "/rawOutput",
         "/output",
+        "/content",
     ] {
         if let Some(output) = raw.pointer(pointer).and_then(value_to_text) {
             return Some(output);
         }
     }
-    if let Some(content) = raw.pointer("/toolCall/content").and_then(value_to_text) {
-        return Some(content);
-    }
     None
+}
+
+/// 快照里是否有任何实质内容。流式适配器在参数尚未到达时先发空占位
+/// （`{}` 或 `{"command": ""}`），这类快照只代表「还没到」，不代表工具的真实输入。
+fn has_substantive_value(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Array(items) => !items.is_empty(),
+        Value::Object(object) => object.values().any(has_substantive_value),
+        _ => true,
+    }
 }
 
 /// `rawOutput` 在 ACP 里可能是字符串、`{text}`、`[{type:"text",text}]` 或
@@ -491,12 +545,10 @@ mod tests {
         event
     }
 
-    fn tool_event(id: &str, tool_call_id: &str, status: &str, input: Value) -> AcpUiEvent {
-        let mut event = event(id, "toolCallUpdate");
-        event.tool_call_id = Some(tool_call_id.to_string());
-        event.status = Some(status.to_string());
-        event.raw = Some(json!({"toolCall": {"rawInput": input}}));
-        event
+    /// 线上形状的工具帧：直接走 `normalize_session_update`，fixture 就是真实 ACP 帧
+    /// （顶层 `toolCallId` / `rawInput` / `rawOutput` / `content`），不另造包装形状。
+    fn wire_tool(seq: u64, frame: Value) -> AcpUiEvent {
+        gold_band::acp::events::normalize_session_update(seq, None, &frame)
     }
 
     fn drain(projector: &mut Projector) -> Vec<TranscriptMessage> {
@@ -562,25 +614,37 @@ mod tests {
     #[test]
     fn tool_use_is_emitted_once_then_result_pairs_by_tool_call_id() {
         let mut projector = Projector::new(None);
-        projector.observe(&tool_event(
-            "call-1",
-            "call-1",
-            "in_progress",
-            json!({"file_path": "a.rs", "content": "hello"}),
+        projector.observe(&wire_tool(
+            1,
+            json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": "call-1",
+                "title": "Write",
+                "status": "in_progress",
+                "rawInput": {"file_path": "a.rs", "content": "hello"},
+            }),
         ));
-        projector.observe(&tool_event(
-            "update-2",
-            "call-1",
-            "in_progress",
-            json!({"file_path": "a.rs", "content": "hello"}),
+        projector.observe(&wire_tool(
+            2,
+            json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "call-1",
+                "status": "in_progress",
+            }),
         ));
-        let mut done = tool_event("update-3", "call-1", "completed", json!({}));
-        done.raw = Some(json!({"toolCall": {"content": [{"type": "text", "text": "ok"}]}}));
-        projector.observe(&done);
+        projector.observe(&wire_tool(
+            3,
+            json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "call-1",
+                "status": "completed",
+                "rawOutput": {"formatted_output": "ok"},
+            }),
+        ));
         let batch = drain(&mut projector);
         assert_eq!(batch.len(), 2);
         assert_eq!(batch[0].message_type, super::super::model::TYPE_TOOL_USE);
-        assert_eq!(batch[0].tool.as_deref(), Some("tool"));
+        assert_eq!(batch[0].tool.as_deref(), Some("Write"));
         assert_eq!(
             batch[0].input,
             Some(json!({"file_path": "a.rs", "content": "hello"}))
@@ -589,14 +653,117 @@ mod tests {
         assert_eq!(batch[1].output.as_deref(), Some("ok"));
     }
 
+    /// 流式适配器（如 codex/claude 的非 AIR 客户端）先发空占位快照，参数到齐后才补发
+    /// 完整快照；`tool_use` 没有更新语义，只在首个快照上取值会永久丢失命令。
+    #[test]
+    fn streaming_input_placeholder_is_replaced_by_final_snapshot() {
+        let mut projector = Projector::new(None);
+        projector.observe(&wire_tool(
+            1,
+            json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": "call-1",
+                "title": "Bash",
+                "status": "in_progress",
+                "rawInput": {},
+            }),
+        ));
+        projector.observe(&wire_tool(
+            2,
+            json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "call-1",
+                "rawInput": {"command": "git status"},
+            }),
+        ));
+        projector.observe(&wire_tool(
+            3,
+            json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "call-1",
+                "status": "completed",
+            }),
+        ));
+        let batch = drain(&mut projector);
+        assert_eq!(batch[0].message_type, super::super::model::TYPE_TOOL_USE);
+        assert_eq!(batch[0].input, Some(json!({"command": "git status"})));
+    }
+
+    /// 参数分批到达时，以真正发出那一刻的最新快照为准（非终态也必须在节拍内发出）。
+    #[test]
+    fn tool_use_freezes_latest_input_snapshot_at_flush() {
+        let mut projector = Projector::new(None);
+        projector.observe(&wire_tool(
+            1,
+            json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": "call-1",
+                "title": "Bash",
+                "status": "in_progress",
+                "rawInput": {"command": "git st"},
+            }),
+        ));
+        projector.observe(&wire_tool(
+            2,
+            json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "call-1",
+                "rawInput": {"command": "git status"},
+            }),
+        ));
+        let batch = drain(&mut projector);
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].input, Some(json!({"command": "git status"})));
+    }
+
+    /// 显式 `rawInput: null` 的收尾修订、以及 `{"command": ""}` 空占位都不得覆盖已知输入。
+    #[test]
+    fn empty_placeholder_and_null_revision_keep_known_input() {
+        let mut projector = Projector::new(None);
+        projector.observe(&wire_tool(
+            1,
+            json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": "call-1",
+                "title": "Bash",
+                "status": "in_progress",
+                "rawInput": {"command": ""},
+            }),
+        ));
+        projector.observe(&wire_tool(
+            2,
+            json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "call-1",
+                "rawInput": {"command": "ls -la"},
+            }),
+        ));
+        projector.observe(&wire_tool(
+            3,
+            json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "call-1",
+                "status": "completed",
+                "rawInput": null,
+            }),
+        ));
+        let batch = drain(&mut projector);
+        assert_eq!(batch[0].input, Some(json!({"command": "ls -la"})));
+    }
+
     #[test]
     fn terminal_tool_without_input_still_emits_use_then_result() {
         let mut projector = Projector::new(None);
-        let mut done = event("call-9", "toolCallUpdate");
-        done.tool_call_id = Some("call-9".to_string());
-        done.status = Some("failed".to_string());
-        done.raw = Some(json!({"output": "boom"}));
-        projector.observe(&done);
+        projector.observe(&wire_tool(
+            1,
+            json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": "call-9",
+                "title": "Bash",
+                "status": "failed",
+                "rawOutput": "boom",
+            }),
+        ));
         let batch = drain(&mut projector);
         assert_eq!(batch.len(), 2);
         assert_eq!(batch[0].message_type, super::super::model::TYPE_TOOL_USE);
@@ -604,12 +771,99 @@ mod tests {
         assert_eq!(batch[1].output.as_deref(), Some("boom"));
     }
 
+    /// 非命令类工具的结果在顶层 `content` 的文本块里（命令类工具看 `rawOutput`）。
+    #[test]
+    fn tool_result_reads_top_level_content_blocks() {
+        let mut projector = Projector::new(None);
+        projector.observe(&wire_tool(
+            1,
+            json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": "call-1",
+                "title": "Read",
+                "status": "completed",
+                "rawInput": {"file_path": "a.rs"},
+                "content": [{"type": "content", "content": {"type": "text", "text": "文件内容"}}],
+            }),
+        ));
+        let batch = drain(&mut projector);
+        assert_eq!(batch[1].output.as_deref(), Some("文件内容"));
+    }
+
+    #[test]
+    fn tool_result_reads_top_level_raw_output() {
+        let mut projector = Projector::new(None);
+        projector.observe(&wire_tool(
+            1,
+            json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": "call-1",
+                "title": "Bash",
+                "status": "completed",
+                "rawInput": {"command": "ls"},
+                "rawOutput": [{"type": "text", "text": "line1"}, {"type": "text", "text": "line2"}],
+            }),
+        ));
+        let batch = drain(&mut projector);
+        assert_eq!(batch[1].output.as_deref(), Some("line1\nline2"));
+    }
+
+    /// 工具行与前后文本必须保持事件顺序：文本段只在 close 时落盘，工具行入队前必须先收起。
+    #[test]
+    fn tool_rows_keep_event_order_with_surrounding_text() {
+        let mut projector = Projector::new(None);
+        projector.observe(&text_chunk("item-1", "开始"));
+        projector.observe(&wire_tool(
+            2,
+            json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": "call-1",
+                "title": "Bash",
+                "status": "in_progress",
+                "rawInput": {"command": "ls"},
+            }),
+        ));
+        projector.observe(&text_chunk("item-2", "之后"));
+        projector.observe(&wire_tool(
+            4,
+            json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "call-1",
+                "status": "completed",
+                "rawOutput": "out",
+            }),
+        ));
+        projector.close_segment();
+        let batch = drain(&mut projector);
+        let kinds: Vec<(&str, &str)> = batch
+            .iter()
+            .map(|m| (m.message_type, m.content.as_deref().unwrap_or("")))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (TYPE_TEXT, "开始"),
+                (super::super::model::TYPE_TOOL_USE, ""),
+                (TYPE_TEXT, "之后"),
+                (super::super::model::TYPE_TOOL_RESULT, ""),
+            ]
+        );
+    }
+
     #[test]
     fn tool_output_is_capped() {
         let mut projector = Projector::new(None);
-        let mut done = tool_event("call-1", "call-1", "completed", json!({"command": "x"}));
-        done.raw = Some(json!({"output": "y".repeat(MAX_TOOL_OUTPUT_CHARS * 2)}));
-        projector.observe(&done);
+        projector.observe(&wire_tool(
+            1,
+            json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": "call-1",
+                "title": "Bash",
+                "status": "completed",
+                "rawInput": {"command": "x"},
+                "rawOutput": {"formatted_output": "y".repeat(MAX_TOOL_OUTPUT_CHARS * 2)},
+            }),
+        ));
         let batch = drain(&mut projector);
         assert_eq!(
             batch[1].output.as_deref().map(str::len),

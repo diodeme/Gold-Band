@@ -3232,7 +3232,7 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 **实现**：
 
 - ① **数据/接口先定**（`transcript/model.rs`）：`TranscriptMessage { seq, type, tool?, content?, input?, output? }`（None 省略）+ `UsageRow`（七字段）+ 常量块（flush 500ms、排空 5s、output 8192、text 32768 拆条、输入字段 16k/整体 64KB、批 200 条/256KB、缓冲 512、跟踪表 2048/64）。`client.rs` 增 `post_task_messages` / `post_task_usage`（`json_send` 单次尝试、10s 超时、PAT、无 workspace 头）。
-- ② **投影**（`projector.rs`）：观测点在 `acp_live_update_emitter` **IPC 压缩前**（压缩剥掉 `rawInput/rawOutput`）。文本事件是**全量累积快照**（`apply_streaming_delta` 语义），按 stable item id 的「已见字符数」差量投影，快照变短（压缩/重建）视为新分段整段重投影；每拍 `close_segment` 让文本按 500ms 成段；工具行按 `toolCallId` 配对，`use` 只发一次（`rawInput` 首次可用；终态仍无输入发 `{}`），`result` 只在终态发一次（`rawOutput.formatted_output` → agent transcript `toolOutput` → `toolCall.content`，截 8192）。工具名优先级：`_meta.goldBandConversation.toolName` → agent transcript 关系 → 标题首词 → `tool`。子 agent 分支（`event_branch_id != root`）不上报。
+- ② **投影**（`projector.rs`）：观测点在 `acp_live_update_emitter` **IPC 压缩前**（压缩剥掉 `rawInput/rawOutput`）。文本事件是**全量累积快照**（`apply_streaming_delta` 语义），按 stable item id 的「已见字符数」差量投影，快照变短（压缩/重建）视为新分段整段重投影；每拍 `close_segment` 让文本按 500ms 成段；工具行按 `toolCallId` 配对，`use` 只发一次（首个快照占位入队、**发出时**冻结该工具的最新实质性快照；空占位 / 显式 `rawInput:null` 不覆盖已知输入，终态仍无输入发 `{}`——见 §12.99），`result` 只在终态发一次（`rawOutput.formatted_output` → agent transcript `toolOutput` → 顶层 `content` 文本块 → 顶层 `rawOutput`，截 8192）；工具行入队前先 `close_segment`，保证与前后文本段的 seq 顺序 = 事件顺序。工具名优先级：`_meta.goldBandConversation.toolName` → agent transcript 关系 → 标题首词 → `tool`。子 agent 分支（`event_branch_id != root`）不上报。
 - ③ **输入归一化**（`tool_input.rs`）：**形状优先、不看工具名**——`changes[]` → `file_path+content` → `file_path+old_string+new_string` → `{edits[]}` 合成 `changes[]`（构造 unified diff）→ Codex patch 文本（只对含 `*** Begin Patch` 等标记的字符串解析，避免把普通内容误判）→ `{command}` → 原样透传；单字段/整体双上限，二次收紧后仍超则 `{"truncated":true}`。所有字符串清洗 NUL。
 - ④ **上报器**（`reporter.rs`）：`TranscriptRegistry`（两层 map，`&str` 查找零分配）作为 managed state；每 run 一个 `Reporter`（`Projector` + `next_seq` + 用量累计 + closing/stopped + oneshot）。worker `select!`(500ms tick / Notify) 取批→锁外 POST→锁内推进 seq；`TaskNotFound` → 停止上报；`closing` → 最后一批 + 用量 + oneshot 收尾。**不重试**（重复 seq 会产生重复行）。
 - ⑤ **用量**：lifecycle 回调是热路径——`NodeCompleted` / `AcpTurnFinished`（放在 `outcome != Completed` 早退之前）只做内存登记 `usage_pending.insert(attempt_dir)`；worker 经 **blocking 线程池**读取 `acp.prompt-usage.jsonl`（同步 I/O 不占 async worker 线程），按 `(attempt_dir, turn_seq)` 去重、按 `(provider, model)` 汇总，dirty 时上报累计值，终态再兜底一次。
@@ -3303,6 +3303,33 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 **验证结果**：`cargo test -p gold-band-desktop multica::transcript` **35 passed**（+2：`usage_provider_case_and_space_drift_collapses_into_one_row`——"Anthropic "/"ANTHROPIC"/"anthropic" 合并单行、provider 上报小写、token 相加，漂移先红；`usage_without_provider_is_reported_empty_for_server_backfill`——provider 缺失仍产出空串 entry、靠服务端回填）；`multica::` 全量 **305 passed**；`cargo clippy` 对 transcript/ 零告警；`cargo fmt` 通过。接口级既有 `post_task_usage_sends_cumulative_rows`（mock TCP 断言端点/七字段形状/无 workspace 头）保持绿。
 
 **文件**：`src-tauri/src/multica/transcript/reporter.rs`（聚合键归一化 + 测试）、`src-tauri/src/multica/commands.rs`（两条启动失败路径顺序）；文档 `接入方案.md` §3.2.8（usage 段落重写：专用端点/累计/终态必报/provider 归一化/cost 语义/中途节奏）、本条。
+
+---
+
+### 12.99 改动九十七：工具行按修订快照投影——输入发出时冻结、输出链补真实形状、工具行与文本同序（M5-dc，2026-11-18）
+
+**背景**：内网新包回归反馈——执行记录里 Bash 命令行为空（multica 侧看到 `input: {}` 与 `{"command": ""}`），工具结果输出也为空。multica 侧排查确认渲染是读取时投影、干净数据能自动恢复历史，因此缺失发生在码灵上报侧。
+
+**根因（设计缺陷级，不是单点实现遗漏）**：projector 把 ACP 的工具体系当成「一次性完整对象 + 只追加」来投影，实际它是**修订快照**（`tool_call` + 若干 `tool_call_update`，每帧只携带部分状态）：
+
+- ① **首个快照锁存**：`use_sent` 在首个 `rawInput` 可用时置位——而流式适配器首发常是 `{}` / `{"command": ""}` 占位（`event_tool_input` 只要对象就判可用），参数随后才分批补全。multica 的 `tool_use` 没有更新语义（服务端按行渲染），锁存后完整命令永久丢失。`{"command": ""}` 空值占位同样命中。
+- ② **输出提取链漏真实形状**：只认 `rawOutput.formatted_output` → agent transcript `toolOutput` → `toolCall.*`。命令类工具（终端增量被 materialize 进 `rawOutput.formatted_output`）能命中，**非命令类工具的结果在顶层 `content` 文本块 / 顶层 `rawOutput`**，两者都不在链上 → `output = ""`。
+- ③ **顺序不同源**：文本段延迟到 close（每拍或换流）才入队，工具行却即时入队 → 文本段跨越工具调用时 seq 顺序与事件顺序相反（文本先于工具却被排到工具行之后）。
+
+**实现**（`projector.rs`）：
+
+- ① **`OutboxEntry` 占位 + drain 时冻结**：outbox 从 `VecDeque<TranscriptMessage>` 改为 `VecDeque<OutboxEntry>`；`tool_use` 行在首个快照即按事件顺序入队并标 `pending_input = Some(tool_key)`，真正 `drain()` 时才用该工具的最新快照构造 `input` —— 顺序由入队时刻决定、内容由发出时刻决定，两件事解耦。
+- ② **最新实质性快照胜**：`ToolState.input` 记住最新一版快照，`has_substantive_value` 判定「有实质内容」；空占位（`{}`、`{"command": ""}`）与终态前的显式 `rawInput: null` 都不覆盖已知输入，只有终态仍无任何快照才落 `{}`（沿用原兜底）。
+- ③ **输出链补齐**：`agent_transcript_tool_output` → `rawOutput.formatted_output` → `rawOutput` → `toolCall.*` → 顶层 `content` 文本块 → 顶层 `rawOutput` → `/output`；`value_to_text` 已覆盖 `{text}` / `[{type,text}]` / `{content:[...]}` 三种包裹，`{"type":"terminal"}` 之类无文本块自然落空。
+- ④ **同源顺序**：`tool_use` 入队与 `tool_result` 入队前都先 `close_segment()`（与 `push_user`/`push_error` 同模式），工具行不再越过比它更早或更晚的文本段。
+
+**方案自评审**：过度设计——不新增协议、端点、队列、持久字段或计时器；`OutboxEntry` 是把 outbox 从「不可变消息队列」升级为「可延迟定型的条目队列」这一处结构修正，正是根因所在；未给 `tool_use` 造「更新/重发」语义（服务端无该能力，重发同 seq 会产生重复行）。性能——每条 drain 多一次消息 clone（量级为单条几百字节，500ms 一拍），工具输入归一化从入队时延后到发出时（次数不变）；无新增 I/O、扫描或并发。明确**不做**：不给工具行做「多次修订补发」、不在 projector 内引入计时器/延迟窗口（冻结时机由既有 flush 节拍与终态天然给出）。
+
+**验证结果**：`cargo test -p gold-band-desktop multica::transcript` **41 passed**（+6 新测试，全部在未修复实现上先红——`streaming_input_placeholder_is_replaced_by_final_snapshot`（`{}` 占位锁死）、`tool_use_freezes_latest_input_snapshot_at_flush`（只拿到半截 `git st`）、`empty_placeholder_and_null_revision_keep_known_input`（`{"command": ""}` 占位 + `rawInput:null` 收尾）、`tool_result_reads_top_level_content_blocks`（顶层 `content` 文本块）、`tool_result_reads_top_level_raw_output`（顶层 `rawOutput`）、`tool_rows_keep_event_order_with_surrounding_text`（顺序反转为 `tool_use → text → tool_result → text`）；既有 35 条回归全绿，含 `tool_use_is_emitted_once_then_result_pairs_by_tool_call_id`、`outbox_overflow_drops_oldest_text_first`）；`multica::` 全量 **311 passed**；`cargo clippy -p gold-band-desktop --all-targets` 对改动文件零告警（203 条均为既有其他文件）、`rustfmt --check` 对改动文件干净；本地验证受 upstream `main` 的 `commands::retry_run` 导入断裂阻塞，仅临时放行该导入做验证，验证后已还原、未提交。测试 fixture 走真实线上形状（`normalize_session_update` 直接投影 ACP 帧，顶层 `toolCallId`/`rawInput`/`rawOutput`/`content`），不再用测试自造的 `{"toolCall":{...}}` 包装形状。
+
+**遗留**：multica 侧历史行是按已上报数据读取时渲染的，本次修复只对修复后新产生的执行记录生效，旧任务的历史行无法回填；`cost`/usage 链路的单独排查见 usage 上报审计（结论：本仓库代码自内网验证版以来未变，需内网运行日志收敛）。
+
+**文件**：`src-tauri/src/multica/transcript/projector.rs`（`OutboxEntry`、`remember_input`/`has_substantive_value`、`event_tool_output`、`observe_tool` 顺序、测试）；文档 `接入方案.md` §3.2.8（tool_use/tool_result 投影规则重写）、`Multica开发设计.md` §12.95 投影条目、本条。
 
 ---
 

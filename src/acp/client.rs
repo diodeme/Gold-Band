@@ -161,6 +161,67 @@ struct AcpUsageState {
     /// only accumulate prompt responses, so they no longer cover all work.
     /// Durable stickiness lives in the timeline usage projection.
     background_work_observed: bool,
+    /// 流式用量通道：本 turn 已见的逐次模型调用样本。结算通道（prompt 响应自带
+    /// `usage`）优先，缺失时才用它求和（见 `finish_stream_turn`）。
+    stream_turn: AcpStreamUsageTurn,
+}
+
+/// 流式用量样本的 turn 级收集器。按样本 `id` 去重；无 id 与超出上限的样本丢弃并计数。
+#[derive(Debug, Clone, Default)]
+struct AcpStreamUsageTurn {
+    seen_ids: HashSet<String>,
+    accepted: u32,
+    dropped_without_id: u32,
+    overflowed: u32,
+    totals: AcpPromptTokenUsage,
+}
+
+/// `finish_stream_turn` 的结论：求和结果 + 收集统计（用于「无用量来源」诊断）。
+#[derive(Debug, Clone, Default)]
+struct AcpStreamUsageTurnResult {
+    usage: Option<AcpPromptTokenUsage>,
+    accepted: u32,
+    dropped_without_id: u32,
+    overflowed: u32,
+}
+
+/// 单个 turn 保留的流式样本个数上限：正常的模型调用次数远低于此，超过说明 id 不稳定。
+const MAX_STREAM_USAGE_SAMPLES_PER_TURN: usize = 4_096;
+
+impl AcpStreamUsageTurn {
+    fn add(&mut self, usage: &AcpPromptTokenUsage) {
+        accumulate_stream_token(&mut self.totals.input_tokens, usage.input_tokens);
+        accumulate_stream_token(&mut self.totals.output_tokens, usage.output_tokens);
+        accumulate_stream_token(
+            &mut self.totals.cached_read_tokens,
+            usage.cached_read_tokens,
+        );
+        accumulate_stream_token(
+            &mut self.totals.cached_write_tokens,
+            usage.cached_write_tokens,
+        );
+        // 样本间 total 口径可能不一致，不累加；由分量求和推导。
+        self.accepted = self.accepted.saturating_add(1);
+    }
+
+    fn finish(self) -> AcpStreamUsageTurnResult {
+        let has_usage = self.totals.input_tokens.is_some()
+            || self.totals.output_tokens.is_some()
+            || self.totals.cached_read_tokens.is_some()
+            || self.totals.cached_write_tokens.is_some();
+        AcpStreamUsageTurnResult {
+            usage: has_usage.then_some(self.totals),
+            accepted: self.accepted,
+            dropped_without_id: self.dropped_without_id,
+            overflowed: self.overflowed,
+        }
+    }
+}
+
+fn accumulate_stream_token(total: &mut Option<u64>, delta: Option<u64>) {
+    if let Some(delta) = delta {
+        *total = Some(total.unwrap_or(0).saturating_add(delta));
+    }
 }
 
 impl AcpUsageState {
@@ -190,7 +251,39 @@ impl AcpUsageState {
             },
             compaction,
             background_work_observed: false,
+            stream_turn: AcpStreamUsageTurn::default(),
         }
+    }
+
+    /// prompt turn 开始：丢弃上一 turn 的流式样本。
+    fn begin_stream_turn(&mut self) {
+        self.stream_turn = AcpStreamUsageTurn::default();
+    }
+
+    /// 收集一帧内识别出的流式用量样本：同一 `id` 的重复通知只记一次。
+    fn observe_stream_usage(&mut self, samples: Vec<AcpStreamUsageSample>) {
+        for sample in samples {
+            let Some(id) = sample.id else {
+                // 无稳定 id：重复推送无法去重，宁可丢弃也不重复计费。
+                self.stream_turn.dropped_without_id =
+                    self.stream_turn.dropped_without_id.saturating_add(1);
+                continue;
+            };
+            if self.stream_turn.seen_ids.contains(&id) {
+                continue;
+            }
+            if self.stream_turn.seen_ids.len() >= MAX_STREAM_USAGE_SAMPLES_PER_TURN {
+                self.stream_turn.overflowed = self.stream_turn.overflowed.saturating_add(1);
+                continue;
+            }
+            self.stream_turn.seen_ids.insert(id);
+            self.stream_turn.add(&sample.usage);
+        }
+    }
+
+    /// 取走本 turn 的流式样本合计并重置。结算通道缺失时由调用方写入用量 journal。
+    fn finish_stream_turn(&mut self) -> AcpStreamUsageTurnResult {
+        std::mem::take(&mut self.stream_turn).finish()
     }
 
     /// Fold one provider sample into the canonical session usage state.
@@ -409,8 +502,9 @@ use crate::acp::timeline::{
     TimelineCompactionPolicy, TimelineStore, read_indexed_prompt_anchor_events,
 };
 use crate::acp::usage::{
-    AcpAttemptTokenTotals, AcpAttemptUsageRecovery, AcpPromptTokenUsage, append_prompt_completed,
-    append_prompt_started, prompt_usage_transaction_id, repair_attempt_usage,
+    AcpAttemptTokenTotals, AcpAttemptUsageRecovery, AcpPromptTokenUsage, AcpStreamUsageSample,
+    append_prompt_completed, append_prompt_started, prompt_usage_transaction_id,
+    repair_attempt_usage,
 };
 use crate::config::{
     AcpAdapterConfig, DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS, DiagnosticError,
@@ -6015,8 +6109,51 @@ impl<'a> AcpRuntime<'a> {
             identity.started_at.clone(),
         )?);
         self.pending_retry_prompt_event = None;
+        // 新 turn：结算通道与流式通道都从零开始。
+        self.usage.begin_stream_turn();
         self.active_prompt_turn = Some(identity.clone());
         Ok(identity)
+    }
+
+    /// 结算通道缺失时的流式回退：把本 turn 收集的逐次模型调用样本求和后写成
+    /// `PromptCompleted`（与结算通道同一条 journal 记录，下游（擅长/快照/多重上报）
+    /// 无需感知来源差异）。两条通道都没有用量时记诊断——这是按 adapter 排查 token
+    /// 来源的唯一入口。
+    fn journal_stream_turn_usage(
+        &mut self,
+        prompt_turn: &AcpPromptTurnIdentity,
+        provider_id: &str,
+        settlement_without_usage: Option<&AcpPromptTokenUsage>,
+    ) -> Result<()> {
+        let outcome = self.usage.finish_stream_turn();
+        let usage = outcome.usage.or_else(|| settlement_without_usage.cloned());
+        let Some(usage) = usage else {
+            append_structured_diagnostic_best_effort(
+                &self.paths.diagnostics,
+                "warn",
+                "acp.usage.source-missing",
+                Some(json!({
+                    "turnId": prompt_turn.id,
+                    "adapter": self.connection.adapter().adapter_id,
+                    "usageSamples": outcome.accepted,
+                    "samplesWithoutId": outcome.dropped_without_id,
+                    "samplesOverflowed": outcome.overflowed,
+                })),
+            );
+            return Ok(());
+        };
+        append_prompt_completed(
+            &self.paths.prompt_usage,
+            &prompt_turn.usage_transaction_id,
+            prompt_turn.usage_transaction_seq,
+            &current_timestamp(),
+            None,
+            &usage,
+            Some(provider_id),
+            self.model_override.as_deref(),
+        )?;
+        self.usage.record_prompt_usage(usage);
+        Ok(())
     }
 
     fn mark_prompt_terminal_failure(
@@ -6413,9 +6550,19 @@ impl<'a> AcpRuntime<'a> {
                         let value = response.frame;
                         self.append_inbound_frame(&value);
                         let result = value.get("result").cloned().unwrap_or_else(|| json!({}));
-                        if value.get("error").is_none()
-                            && let Some(prompt_usage) =
-                                AcpPromptTokenUsage::from_prompt_result(&result)
+                        // 结算通道：prompt 响应自带 usage 时优先作为权威值；
+                        // 但全零 usage 只表示适配器「未上报」，此时让位给流式通道。
+                        let settlement_usage = value
+                            .get("error")
+                            .is_none()
+                            .then(|| AcpPromptTokenUsage::from_prompt_result(&result))
+                            .flatten();
+                        let settlement_authoritative = settlement_usage
+                            .as_ref()
+                            .is_some_and(AcpPromptTokenUsage::has_positive_tokens);
+                        if let Some(prompt_usage) = settlement_usage
+                            .as_ref()
+                            .filter(|_| settlement_authoritative)
                         {
                             append_prompt_completed(
                                 &self.paths.prompt_usage,
@@ -6423,11 +6570,11 @@ impl<'a> AcpRuntime<'a> {
                                 prompt_turn.usage_transaction_seq,
                                 &current_timestamp(),
                                 Some(Value::from(request.id)),
-                                &prompt_usage,
+                                prompt_usage,
                                 Some(provider_id),
                                 self.model_override.as_deref(),
                             )?;
-                            self.usage.record_prompt_usage(prompt_usage);
+                            self.usage.record_prompt_usage(prompt_usage.clone());
                         }
                         if value.get("error").is_some() {
                             self.drain_available_inbound_bounded()?;
@@ -6460,6 +6607,17 @@ impl<'a> AcpRuntime<'a> {
                                 .map_err(|error| {
                                     map_prompt_terminal_drain_error(error, cancel_started_at)
                                 })?;
+                        }
+                        // 结算通道缺失或未上报（适配器不在 prompt 响应里带有效 usage）时，
+                        // 用本 turn 收集的流式样本求和作为该 turn 的用量结算值。放在两类终态
+                        // 排空之后（成功：路由水位 + quiet drain；错误/取消：bounded drain）：
+                        // 尾部 usage_update 也算本 turn 的消费，取消的 turn 同样有账。
+                        if !settlement_authoritative {
+                            self.journal_stream_turn_usage(
+                                prompt_turn,
+                                provider_id,
+                                settlement_usage.as_ref(),
+                            )?;
                         }
                         self.maybe_emit_live_timing_update(Instant::now(), "tick")?;
                         if let Some(error) = value.get("error") {
@@ -6663,6 +6821,14 @@ impl<'a> AcpRuntime<'a> {
             } else {
                 None
             };
+
+        // 流式用量通道：只在前台 prompt turn 内收集（后台工作的用量不在 turn 结算口径内）。
+        // 识别器是通用的 token 字段识别，不认 agent：任何把逐次模型调用用量放进
+        // `usage`/`rawUsage`/`modelUsage`/`tokenUsage`（顶层或 `_meta` 下一层）的适配器都覆盖。
+        if self.active_prompt_turn.is_some() {
+            let samples = crate::acp::usage::stream_usage_samples(&update);
+            self.usage.observe_stream_usage(samples);
+        }
 
         if let Some(direct) = &self.direct {
             // Client-owned provenance: this describes delivery outside a user prompt,
@@ -10005,19 +10171,19 @@ mod tests {
         AcpAttemptUsageRecovery, AcpCancelDrainTimeout, AcpCancelled, AcpContextCompactionState,
         AcpPromptFailure, AcpPromptOutputAccumulator, AcpPromptRetryState,
         AcpPromptRouteDrainTimeout, AcpPromptRouteUnavailable, AcpPromptTerminalState,
-        AcpPromptTokenUsage, AcpRuntime, AcpRuntimePolicy, AcpUsageState, AttachedSessionReusePlan,
-        CancelNotificationPhase, DOCTOR_DIAGNOSTIC_TARGET_SIZE, NESTED_AGENT_TRANSCRIPT_CAPABILITY,
-        PARAMETERIZED_MODEL_PICKER_CAPABILITY, PROMPT_CANCEL_DRAIN_FRAME_BUDGET,
-        PROMPT_CANCEL_TIMEOUT, PriorAttemptMetrics, PromptActivity, PromptBundle, PromptVisibility,
-        ProviderControlRegistration, ProviderFreshnessBaseline, RuntimeStopProbe,
-        SessionModelResolution, SessionRestoreCapabilities, SessionRestoreIntent,
-        SessionRestoreMethod, SessionRestorePlan, SessionRestorePlanError, SessionUpdatePhase,
-        acp_prompt_rpc_failure, active_context_compaction, active_timeline_streams,
-        active_timeline_streams_by_branch, append_bounded, append_diagnostic_best_effort,
-        append_raw_frame_best_effort, append_structured_diagnostic_best_effort,
-        attached_sync_required, auth_required_error, authentication_method_id,
-        authentication_method_missing_env, authentication_request_error, cancel_attempt_prompt,
-        canonical_prompt_event_identity, catalog_observation_is_newer,
+        AcpPromptTokenUsage, AcpRuntime, AcpRuntimePolicy, AcpStreamUsageSample, AcpUsageState,
+        AttachedSessionReusePlan, CancelNotificationPhase, DOCTOR_DIAGNOSTIC_TARGET_SIZE,
+        NESTED_AGENT_TRANSCRIPT_CAPABILITY, PARAMETERIZED_MODEL_PICKER_CAPABILITY,
+        PROMPT_CANCEL_DRAIN_FRAME_BUDGET, PROMPT_CANCEL_TIMEOUT, PriorAttemptMetrics,
+        PromptActivity, PromptBundle, PromptVisibility, ProviderControlRegistration,
+        ProviderFreshnessBaseline, RuntimeStopProbe, SessionModelResolution,
+        SessionRestoreCapabilities, SessionRestoreIntent, SessionRestoreMethod, SessionRestorePlan,
+        SessionRestorePlanError, SessionUpdatePhase, acp_prompt_rpc_failure,
+        active_context_compaction, active_timeline_streams, active_timeline_streams_by_branch,
+        append_bounded, append_diagnostic_best_effort, append_raw_frame_best_effort,
+        append_structured_diagnostic_best_effort, attached_sync_required, auth_required_error,
+        authentication_method_id, authentication_method_missing_env, authentication_request_error,
+        cancel_attempt_prompt, canonical_prompt_event_identity, catalog_observation_is_newer,
         cleanup_doctor_acp_dir_after_success, confirmed_context_usage_update,
         dispatch_attempt_prompt_cancel, doctor_adapter_exited_error,
         drain_available_frames_bounded, drain_available_frames_with_budget,
@@ -12448,6 +12614,196 @@ mod tests {
         );
 
         assert_eq!(state.attempt_totals.total_tokens, Some(460));
+    }
+
+    fn stream_sample(
+        id: Option<&str>,
+        input: Option<u64>,
+        output: Option<u64>,
+        cached_read: Option<u64>,
+    ) -> AcpStreamUsageSample {
+        AcpStreamUsageSample {
+            id: id.map(str::to_string),
+            usage: AcpPromptTokenUsage {
+                input_tokens: input,
+                output_tokens: output,
+                cached_read_tokens: cached_read,
+                cached_write_tokens: None,
+                total_tokens: None,
+            },
+        }
+    }
+
+    #[test]
+    fn stream_usage_turn_dedupes_repeated_sample_ids_and_sums_distinct_calls() {
+        let mut state = AcpUsageState::default();
+        state.begin_stream_turn();
+        // 同一 messageId 的用量会在多帧里重复推送，只能计一次。
+        state.observe_stream_usage(vec![
+            stream_sample(Some("msg-1"), Some(100), Some(20), Some(300)),
+            stream_sample(Some("msg-1"), Some(100), Some(20), Some(300)),
+        ]);
+        state.observe_stream_usage(vec![stream_sample(Some("msg-2"), Some(50), Some(10), None)]);
+
+        let outcome = state.finish_stream_turn();
+        assert_eq!(outcome.accepted, 2);
+        assert_eq!(outcome.dropped_without_id, 0);
+        let usage = outcome.usage.unwrap();
+        assert_eq!(usage.input_tokens, Some(150));
+        assert_eq!(usage.output_tokens, Some(30));
+        assert_eq!(usage.cached_read_tokens, Some(300));
+    }
+
+    #[test]
+    fn stream_usage_turn_drops_samples_without_a_stable_id() {
+        let mut state = AcpUsageState::default();
+        state.begin_stream_turn();
+        state.observe_stream_usage(vec![
+            stream_sample(None, Some(100), Some(20), None),
+            stream_sample(Some("msg-1"), Some(30), Some(5), None),
+        ]);
+
+        let outcome = state.finish_stream_turn();
+        assert_eq!(outcome.accepted, 1);
+        assert_eq!(outcome.dropped_without_id, 1);
+        assert_eq!(outcome.usage.unwrap().input_tokens, Some(30));
+
+        // 只收到无 id 样本时没有可上报的用量，必须保持 None 以便触发诊断。
+        let mut state = AcpUsageState::default();
+        state.begin_stream_turn();
+        state.observe_stream_usage(vec![stream_sample(None, Some(100), Some(20), None)]);
+        assert!(state.finish_stream_turn().usage.is_none());
+    }
+
+    #[test]
+    fn stream_usage_turn_resets_between_turns_and_bounds_sample_count() {
+        let mut state = AcpUsageState::default();
+        state.begin_stream_turn();
+        state.observe_stream_usage(vec![stream_sample(Some("stale"), Some(999), None, None)]);
+        // 新 turn 开始时上一 turn 的样本不得泄漏。
+        state.begin_stream_turn();
+        state.observe_stream_usage(vec![stream_sample(Some("fresh"), Some(10), None, None)]);
+        assert_eq!(
+            state.finish_stream_turn().usage.unwrap().input_tokens,
+            Some(10)
+        );
+
+        let mut state = AcpUsageState::default();
+        state.begin_stream_turn();
+        for index in 0..super::MAX_STREAM_USAGE_SAMPLES_PER_TURN {
+            state.observe_stream_usage(vec![stream_sample(
+                Some(&format!("id-{index}")),
+                Some(1),
+                None,
+                None,
+            )]);
+        }
+        state.observe_stream_usage(vec![stream_sample(
+            Some("id-overflow"),
+            Some(1),
+            None,
+            None,
+        )]);
+        let outcome = state.finish_stream_turn();
+        assert_eq!(outcome.overflowed, 1);
+        assert_eq!(
+            outcome.usage.unwrap().input_tokens,
+            Some(super::MAX_STREAM_USAGE_SAMPLES_PER_TURN as u64)
+        );
+    }
+
+    #[test]
+    fn stream_usage_fallback_settles_a_turn_when_provider_reports_no_tokens() {
+        let (_root, mut runtime) = native_subagent_fixture();
+        let identity = super::AcpPromptTurnIdentity {
+            id: "turn".into(),
+            prompt_event_id: "prompt".into(),
+            usage_transaction_id: "usage".into(),
+            usage_transaction_seq: 1,
+            started_at: "1Z".into(),
+            event: crate::acp::events::normalize_session_update(
+                1,
+                Some("parent".into()),
+                &json!({"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"prompt"}}),
+            ),
+        };
+        runtime.active_prompt_turn = Some(identity.clone());
+        runtime.usage.begin_stream_turn();
+        // codebuddy 形态：用量在 usage_update 的 _meta 里，按 messageId 去重。
+        let codebuddy_usage = |message_id: &str, input: u64, output: u64, cached: u64| {
+            json!({
+                "sessionUpdate": "usage_update",
+                "used": 1200,
+                "size": 200_000,
+                "_meta": {
+                    "codebuddy.ai/messageId": message_id,
+                    "usage": {
+                        "input_tokens": input,
+                        "output_tokens": output,
+                        "cache_read_input_tokens": cached
+                    }
+                }
+            })
+        };
+        native_update(
+            &mut runtime,
+            "parent",
+            codebuddy_usage("msg-1", 100, 20, 300),
+        );
+        native_update(
+            &mut runtime,
+            "parent",
+            codebuddy_usage("msg-1", 100, 20, 300),
+        );
+        native_update(&mut runtime, "parent", codebuddy_usage("msg-2", 50, 10, 0));
+        runtime.active_prompt_turn = None;
+
+        runtime
+            .journal_stream_turn_usage(&identity, "codebuddy", None)
+            .unwrap();
+
+        let segments = crate::acp::usage::read_prompt_usage_segments(&runtime.paths.attempt_dir);
+        assert_eq!(segments.len(), 1, "one PromptCompleted per turn");
+        assert_eq!(segments[0].turn_id, "usage");
+        assert_eq!(segments[0].usage.input_tokens, Some(150));
+        assert_eq!(segments[0].usage.output_tokens, Some(30));
+        assert_eq!(segments[0].usage.cached_read_tokens, Some(300));
+        assert_eq!(runtime.usage.latest_prompt.input_tokens, Some(150));
+        assert_eq!(runtime.usage.attempt_totals.input_tokens, Some(150));
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn stream_usage_fallback_preserves_zero_settlement_without_samples() {
+        let (_root, mut runtime) = native_subagent_fixture();
+        let identity = super::AcpPromptTurnIdentity {
+            id: "turn".into(),
+            prompt_event_id: "prompt".into(),
+            usage_transaction_id: "usage".into(),
+            usage_transaction_seq: 1,
+            started_at: "1Z".into(),
+            event: crate::acp::events::normalize_session_update(
+                1,
+                Some("parent".into()),
+                &json!({"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"prompt"}}),
+            ),
+        };
+        let zero_settlement = AcpPromptTokenUsage {
+            input_tokens: Some(0),
+            output_tokens: Some(0),
+            cached_read_tokens: None,
+            cached_write_tokens: None,
+            total_tokens: None,
+        };
+        runtime.usage.begin_stream_turn();
+        runtime
+            .journal_stream_turn_usage(&identity, "adapter", Some(&zero_settlement))
+            .unwrap();
+
+        let segments = crate::acp::usage::read_prompt_usage_segments(&runtime.paths.attempt_dir);
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].usage.input_tokens, Some(0));
+        runtime.shutdown();
     }
 
     #[test]

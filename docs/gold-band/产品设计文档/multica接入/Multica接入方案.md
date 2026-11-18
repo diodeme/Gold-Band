@@ -500,7 +500,7 @@ start_multica_conversation_run(...)   # Req D：会话级续跑并入 classify_r
 
 - `user`：用户原话，只填 `content`（`type` 固定英文小写 `user`，multica 前端针对该字符串做专门渲染）。两类来源：**初始输入**——reporter 构造期显式推入 outbox 最前部，保证任务开始执行前作为 seq=1 第一条上报；内容 = 用户需求原话（fresh 取 composer 提交文本，resume 取被续任务 requirement 文件），**不是**组装后的完整 prompt（拼系统指令/上下文注入是引擎内部机制，报了会把第一行变成几千字噪音）。**中途插话**——观测 userTextDelta 回声事件（码灵合成的 goldBandPrompt 事件），收到即投影进同一批队列、同频率 flush，seq 分配器照常给号，「用户说了什么 → agent 如何响应」的因果顺序自动成立；原样上报、不改写、不摘要、不拼接（超 32k 拆连续多条）。过滤：只认合成事件源（`source=="goldBandPrompt"`）、隐藏注入不报（`hiddenFromChat`）、`originalUserText==true`（composer 用户亲手输入；workflow/auto 节点驱动的 turn 不报——那是引擎组装的 prompt，用户没"说过"）；fresh 直发首拍回声与初始输入逐字相等且先于 agent 输出，去重跳过以免双报。
 - `text`：assistant 文本。live 事件是**全量累积快照**，按「已见字符数」差量投影，每 500ms flush 成段（单条 ≤32k 字符，超出拆连续多条）。用户消息入队前先收起进行中的文本段，保持时间线交替顺序。
-- `tool_use` / `tool_result`：按 `toolCallId` 配对，**每个工具调用的 `use` / `result` 各只发一次**（multica 的 `tool_use` 没有更新语义，服务端按行渲染，迟到的修订无法补写）。ACP 的工具调用是**修订快照**而非一次性完整对象：首个快照常是 `{}` / `{"command": ""}` 占位，参数随后分批补全——因此 `use` 行在首个快照即按事件顺序占位入队，**真正发出时（≤1 个 flush 节拍或终态）才冻结该工具的最新实质性快照**；空占位与显式 `rawInput: null` 收尾修订不覆盖已知输入，终态仍无输入才发 `{}`。`result` 只在终态发一次，输出按 `rawOutput.formatted_output` → agent transcript `toolOutput` → 顶层 `content` 文本块 → 顶层 `rawOutput` 的顺序取纯文本，≤8192 字符。工具行与文本段共用同一有序队列：工具行入队/结果入队前先收起进行中的文本段，保证 `seq` 顺序 = 事件顺序。
+- `tool_use` / `tool_result`：按 `toolCallId` 配对，**每个工具调用的 `use` / `result` 各只发一次**（multica 的 `tool_use` 没有更新语义，服务端按行渲染，迟到的修订无法补写）。ACP 的工具调用是**修订快照**而非一次性完整对象：首个快照常是 `{}` / `{"command": ""}` 占位，参数随后由 `tool_call_update` 补全。因此 **`use` 行只在「已有实质性输入」或「工具已到终态」时才入队**——占位帧本身不占位入队（否则下一 flush 节拍就会把 `{}` 冻结成定稿、迟到的参数再也补不进去）；入队后仍保留「发出时取最新实质性快照」语义，空占位与 `rawInput: null` 不覆盖已知输入，终态仍无输入才发 `{}`。运行结束时由 `finalize()` 兜底补出始终没等到实质输入/终态的工具行（例如适配器只发占位后中断），退化补出的行排在末尾、不参与正常事件顺序。`result` 只在终态发一次，输出按 agent transcript `toolOutput` → `toolCall.rawOutput.formatted_output` → `toolCall.rawOutput` → `toolCall.output` → `toolCall.content` → 顶层 `rawOutput` → 顶层 `toolResult` → `toolCall.toolResult` → 顶层 `output` → 顶层 `content` 的顺序取纯文本，≤8192 字符。工具行与文本段共用同一有序队列：工具行入队/结果入队前先收起进行中的文本段，保证 `seq` 顺序 = 事件顺序。
 - 工具输入**形状优先**归一化为 multica 三种约定（不依赖工具名）：`changes[]` / `file_path+content` / `file_path+old_string+new_string`；`{edits[]}` 合成为 `changes[]`；Codex `apply_patch` 文本（`*** Begin Patch` / `*** Update File:` / `*** Add File:` / `*** Delete File:` / `*** Move to:`）解析为 `changes[]`；shell 用 `{command}`；都不命中则原样透传（单字段 ≤16k 字符、整体 ≤64KB）。
 - `error`：失败/取消终态一条（文本取 fail 上报的 error）。
 - `thinking`：**默认不上报**（`REPORT_THINKING = false`）。理由：思考可能引用内部提示词/敏感推理，而 multica 的可见范围是该需求的工作区成员（比本地操作者广）；multica 前端对完全没有 thinking 行的任务渲染完全正常。
@@ -513,6 +513,7 @@ start_multica_conversation_run(...)   # Req D：会话级续跑并入 classify_r
 - 失败即丢、**不重试**（批次原子；服务端表上 seq 无唯一约束，重发同 seq 会产生重复行）。404（任务已删除/无权）→ 本 run 停止上报。
 - 终态前排空（waitForDrain，5s 上限；取消路径 3s）：完成 / 失败 / 取消 / 启动失败四条路径都先落 `error`（失败类）并排空，再写 multica 终态，保证「执行记录完整 → 任务终态」的观察顺序。取消检测（remote 已被取消/404）走后台排空，不阻塞 3s 心跳 tick。
 - 用量：**专用端点** `POST /api/daemon/tasks/{id}/usage`，body `{usage:[7 字段]}`（token 不得塞进 messages 请求——服务端只认 messages 字段，塞了会被忽略、进不了 task_usage 展示链路）。节点成功边界与每个 turn 收尾只做一次内存登记（lifecycle 回调是热路径），由 worker 在 blocking 线程池读取该 attempt 的 `acp.prompt-usage.jsonl`（同步 I/O 不占 async worker 线程），按 `(attempt_dir, turn_seq)` 去重、按 `(provider, model)` 汇总。
+  - **用量来源双通道（通用字段识别，不按 agent 分支）**：① **结算通道**——`session/prompt` 响应自带 `usage`（`inputTokens/outputTokens/cachedReadTokens/cachedWriteTokens/totalTokens`），一 turn 写一条 `PromptCompleted`，是权威值；② **流式通道**——适配器在 `session/update` 里逐次模型调用推送的用量，从顶层或 `_meta` 下一层的 `usage`/`rawUsage`/`modelUsage`/`tokenUsage` 中识别（字段名覆盖 snake_case 与 camelCase，含 `prompt_tokens`/`completion_tokens` 别名与 `*_details.cached_tokens` 嵌套缓存明细；含缓存的 inclusive input 会先减出缓存）。结算通道缺失或**全零**（= 适配器未上报）时，将本 turn 的流式样本按稳定样本 id（`messageId/callId/responseId/...`，含 `_meta` 命名空间键）去重后求和，写成**同一条** `PromptCompleted`——下游聚合与上报无需感知来源差异。两通道都没有可用用量 → 诊断 `acp.usage.source-missing`（adapter 名 + 样本接受/无 id/溢出计数），作为排查 token 来源的唯一入口。`used/size`（上下文仪表）、`cost`（非 USD 面额）与估算类字段（如 `usageByCategory`）不作为 token 来源。
   - **每次上报从任务开始的累计总量**（服务端按 `(task_id, provider, model)` UPSERT 替换，重复上报是覆盖不是累加）；一个任务用了多个模型就报多条 entries。
   - **终态必报一次**：complete/fail/取消/启动失败回滚（release 或 fail）**之前**都先排空上报，与「执行记录完整 → 任务终态」顺序一致——该端点独立于 complete/fail 存在，失败/取消的任务也要有账。中途在每个节点/turn 边界随 dirty 上报（协议称中途可选、无实时消费方；边界触发天然有界，不额外节流）。
   - `provider` 上报前 trim + 小写归一化（服务端自动小写并按 `(task_id, provider, model)` 替换，本端聚合键必须先归一化，否则大小写漂移会被拆成多条 entry、服务端同 key 后写胜 → 少算 token）；provider 缺失/空串由服务端从任务 runtime 回填。
@@ -522,10 +523,10 @@ start_multica_conversation_run(...)   # Req D：会话级续跑并入 classify_r
 **性能与有界性**
 
 - 每任务每 500ms 至多一个 HTTP（空闲批跳过），观测点是纯内存投影（类型分流 → 子分支过滤 → 注册表查找，子 agent 分支的高频流式事件不进注册表锁），无 I/O、无全量扫描；用量文件读取只在边界登记后由 worker 在 blocking 线程池执行，每个边界一次小文件读取。
-- 有界：未发缓冲 512 条（溢出丢最旧文本行，工具行优先保留）、工具/文本流跟踪表 2048/64（超限淘汰最旧）；单批 200 条 / 256KB。内存不随任务产出行数无界增长。
-- 非 multica 本地会话零开销：一次类型判断 + 注册表查找即返回。
+- 有界：未发缓冲 512 条（溢出丢最旧文本行，工具行优先保留）、工具/文本流跟踪表 2048/64（超限淘汰最旧）；单批 200 条 / 256KB；流式用量样本每 turn 上限 4096 个（按稳定 id 去重，正常模型调用次数远低于此，超限计数丢弃）。内存不随任务产出行数无界增长。
+- 非 multica 本地会话零开销：一次类型判断 + 注册表查找即返回。流式用量识别只在前台 prompt turn 内对 session/update 帧做固定几处 JSON 字段读取，不扫描文本内容、不做正则。
 
-**验收**：`GET /api/daemon/tasks/{taskId}/messages?since=N` 拉增量与本地 timeline 比对——seq 连续无重复、文本段落齐全、`tool_use`/`tool_result` 成对、输入形状命中 multica 渲染；**seq=1 是 `user` 类型且内容 = 用户需求原话（非组装 prompt），中途插话按因果顺序插在流中间、内容逐字原样**；usage 累计值与本地 token 统计一致。内网已按此方法跑通基本流程（2026-11-13，未见阻塞）；Codex `apply_patch` 解析仍待真实样本校准。
+**验收**：`GET /api/daemon/tasks/{taskId}/messages?since=N` 拉增量与本地 timeline 比对——seq 连续无重复、文本段落齐全、`tool_use`/`tool_result` 成对、输入形状命中 multica 渲染；**seq=1 是 `user` 类型且内容 = 用户需求原话（非组装 prompt），中途插话按因果顺序插在流中间、内容逐字原样**；usage 累计值与本地 token 统计一致；选择任一 ACP agent（含只发占位工具帧或不在 prompt 响应里带 usage 的适配器）执行后，工具行命令非空、usage 行非零（双通道任一命中即可）。内网已按此方法跑通基本流程（2026-11-13，未见阻塞）；Codex `apply_patch` 解析仍待真实样本校准。
 
 ---
 

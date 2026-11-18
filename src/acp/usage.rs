@@ -48,6 +48,21 @@ impl AcpPromptTokenUsage {
             || self.total_tokens.is_some()
     }
 
+    /// 是否为有意义的用量：全零或全空的 `usage` 通常表示适配器「未上报」，
+    /// 不能当作权威结算值（否则会吞掉流式通道的实测数据）。
+    pub fn has_positive_tokens(&self) -> bool {
+        [
+            self.input_tokens,
+            self.output_tokens,
+            self.cached_read_tokens,
+            self.cached_write_tokens,
+            self.total_tokens,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|value| value > 0)
+    }
+
     pub fn effective_total_tokens(&self) -> Option<u64> {
         self.total_tokens.or_else(|| {
             let components = [
@@ -90,6 +105,222 @@ fn accumulate_optional_token(total: &mut Option<u64>, delta: Option<u64>) {
     if let Some(delta) = delta {
         *total = Some(total.unwrap_or(0).saturating_add(delta));
     }
+}
+
+/// 一条可累加的流式 token 样本：来自逐次模型调用的用量通知（ACP `usage_update`、
+/// provider `_meta.usage` 等）。它与「结算通道」（`session/prompt` 响应自带 `usage`）
+/// 互斥使用，见 `AcpUsageState::finish_stream_turn`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcpStreamUsageSample {
+    /// 样本稳定标识。同一 `id` 的重复通知只记一次；缺失 id 的样本不可信
+    /// （重复推送无法去重），消费端必须丢弃并计数。
+    pub id: Option<String>,
+    pub usage: AcpPromptTokenUsage,
+}
+
+/// 用量承载位置：顶层，或 `_meta` 下一层。`used`/`size`（上下文占用）、
+/// `cost`（额度/货币）与 `usageByCategory`（估算拆分）都不是消费量，不在此列。
+const STREAM_USAGE_LOCATIONS: [&str; 4] = ["usage", "rawUsage", "modelUsage", "tokenUsage"];
+
+/// 输入 token 的显式（不含缓存）键名。
+const INPUT_EXCLUSIVE_KEYS: [&str; 2] = ["input_tokens", "inputTokens"];
+/// 输入 token 的包含缓存键名（OpenAI 语义：`prompt_tokens` 含缓存命中）。
+const INPUT_INCLUSIVE_KEYS: [&str; 2] = ["prompt_tokens", "promptTokens"];
+const OUTPUT_KEYS: [&str; 4] = [
+    "output_tokens",
+    "outputTokens",
+    "completion_tokens",
+    "completionTokens",
+];
+const CACHE_READ_KEYS: [&str; 9] = [
+    "cache_read_input_tokens",
+    "cacheReadInputTokens",
+    "cache_read_tokens",
+    "cacheReadTokens",
+    "cached_read_tokens",
+    "cachedReadTokens",
+    "prompt_cache_hit_tokens",
+    "promptTokensCached",
+    "prompt_tokens_cached",
+];
+const CACHE_WRITE_KEYS: [&str; 6] = [
+    "cache_creation_input_tokens",
+    "cacheCreationInputTokens",
+    "cache_write_tokens",
+    "cacheWriteTokens",
+    "cached_write_tokens",
+    "cachedWriteTokens",
+];
+/// 嵌套缓存明细：这些字段所在的输入口径**包含**缓存（OpenAI usage details）。
+const CACHED_DETAIL_PARENTS: [&str; 4] = [
+    "input_tokens_details",
+    "inputTokensDetails",
+    "prompt_tokens_details",
+    "promptTokensDetails",
+];
+const TOTAL_KEYS: [&str; 2] = ["total_tokens", "totalTokens"];
+
+/// 从任一 ACP 帧里识别可累加的 token 用量样本。
+///
+/// 通用识别（不按 agent 分支）：只认标准键名的 token 四元组，不认上下文占用、
+/// 额度/货币和估算拆分；同一帧多个承载位置都命中时由消费端按 `id` 去重。
+pub fn stream_usage_samples(frame: &Value) -> Vec<AcpStreamUsageSample> {
+    let mut samples = Vec::new();
+    for location in STREAM_USAGE_LOCATIONS {
+        if let Some(value) = frame.get(location) {
+            push_stream_sample(&mut samples, frame, value);
+        }
+    }
+    let Some(meta) = frame.get("_meta").filter(|meta| meta.is_object()) else {
+        return samples;
+    };
+    for location in STREAM_USAGE_LOCATIONS {
+        if let Some(value) = meta.get(location) {
+            push_stream_sample(&mut samples, frame, value);
+        }
+    }
+    // 少数适配器把 token 字段直接摊在 `_meta` 上。
+    push_stream_sample(&mut samples, frame, meta);
+    samples
+}
+
+fn push_stream_sample(samples: &mut Vec<AcpStreamUsageSample>, frame: &Value, value: &Value) {
+    if !value.is_object() {
+        return;
+    }
+    let Some(usage) = token_usage_from_value(value) else {
+        return;
+    };
+    samples.push(AcpStreamUsageSample {
+        id: stream_sample_id(frame, value),
+        usage,
+    });
+}
+
+/// 通用 token 字段识别：仅当对象里存在可识别的 token 字段时才得到样本。
+fn token_usage_from_value(value: &Value) -> Option<AcpPromptTokenUsage> {
+    let explicit_input = first_token(value, &INPUT_EXCLUSIVE_KEYS);
+    let inclusive_input = first_token(value, &INPUT_INCLUSIVE_KEYS);
+    let output = first_token(value, &OUTPUT_KEYS);
+    let flat_cache_read = first_token(value, &CACHE_READ_KEYS);
+    let nested_cache_read = CACHED_DETAIL_PARENTS.iter().find_map(|parent| {
+        value
+            .get(*parent)
+            .and_then(|details| first_token(details, &["cached_tokens", "cachedTokens"]))
+    });
+    let cache_read = flat_cache_read.or(nested_cache_read);
+    let cache_write = first_token(value, &CACHE_WRITE_KEYS);
+    let total = first_token(value, &TOTAL_KEYS);
+
+    let (mut input, input_inclusive) = match explicit_input {
+        Some(input) => (Some(input), false),
+        None => (inclusive_input, inclusive_input.is_some()),
+    };
+    if input.is_none() && output.is_none() && cache_read.is_none() && cache_write.is_none() {
+        return None;
+    }
+
+    // 输入口径是否包含缓存：OpenAI 语义的 `prompt_tokens`、嵌套 details 明细，
+    // 以及 `total_tokens == input + output`（排除缓存）都说明缓存已计入输入。
+    let cache_sum = cache_read
+        .unwrap_or(0)
+        .saturating_add(cache_write.unwrap_or(0));
+    let inclusive = input_inclusive
+        || nested_cache_read.is_some()
+        || total
+            .zip(input)
+            .zip(output)
+            .is_some_and(|((total, input), output)| total == input.saturating_add(output))
+            && cache_sum > 0;
+    if inclusive {
+        input = input.map(|input| input.saturating_sub(cache_sum));
+    }
+
+    let usage = AcpPromptTokenUsage {
+        input_tokens: input,
+        output_tokens: output,
+        cached_read_tokens: cache_read,
+        cached_write_tokens: cache_write,
+        total_tokens: total,
+    };
+    usage.has_any_value().then_some(usage)
+}
+
+fn first_token(value: &Value, keys: &[&str]) -> Option<u64> {
+    keys.iter().find_map(|key| token_count(value.get(*key)?))
+}
+
+fn token_count(value: &Value) -> Option<u64> {
+    value.as_u64().or_else(|| {
+        value
+            .as_f64()
+            .filter(|value| *value >= 0.0)
+            .map(|value| value.round() as u64)
+    })
+}
+
+/// 样本稳定 id：先看 usage 对象自带的字段，再看 `_meta` 的命名空间键
+/// （`codebuddy.ai/messageId` 等）。按「每次模型调用唯一」的可靠度排序，
+/// 名字里带限定词的键（`conversationRequestId`、`modelRequestId`）不会被当成样本 id。
+const SAMPLE_ID_PRIORITY: [&str; 9] = [
+    "messageid",
+    "llmmessageid",
+    "llmid",
+    "callid",
+    "responseid",
+    "sampleid",
+    "usageid",
+    "requestid",
+    "id",
+];
+
+fn stream_sample_id(frame: &Value, usage: &Value) -> Option<String> {
+    const DIRECT_KEYS: [&str; 11] = [
+        "messageId",
+        "message_id",
+        "callId",
+        "call_id",
+        "responseId",
+        "response_id",
+        "sampleId",
+        "usageId",
+        "requestId",
+        "request_id",
+        "id",
+    ];
+    for key in DIRECT_KEYS {
+        if let Some(id) = usage
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            return Some(id.to_string());
+        }
+    }
+    let meta = frame.get("_meta")?.as_object()?;
+    for wanted in SAMPLE_ID_PRIORITY {
+        for (key, value) in meta {
+            if sample_id_key_matches(key, wanted) {
+                if let Some(id) = value.as_str().map(str::trim).filter(|id| !id.is_empty()) {
+                    return Some(id.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// `_meta` 键按末段（`/` 或 `.` 之后）归一化比较，兼容 `codebuddy.ai/`、`foo.bar/`
+/// 等命名空间前缀。
+fn sample_id_key_matches(key: &str, wanted: &str) -> bool {
+    let terminal = key.rsplit(['/', '.']).next().unwrap_or(key);
+    let normalized = terminal
+        .chars()
+        .filter(|character| *character != '_' && *character != '-')
+        .filter_map(|character| character.to_lowercase().next())
+        .collect::<String>();
+    normalized == wanted
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -793,6 +1024,109 @@ mod tests {
 
     use crate::acp::events::{AcpAttemptPaths, AcpUiEvent, write_timeline_items};
     use crate::storage::append_jsonl;
+
+    /// codebuddy 真实形状：`_meta.usage` 为 Anthropic 口径（`input_tokens` 不含缓存），
+    /// id 在 `_meta["codebuddy.ai/messageId"]`；顶层 `used`/`size`/`cost` 是上下文占用
+    /// 与额度，不是消费量。
+    #[test]
+    fn stream_usage_reads_codebuddy_meta_usage() {
+        let frame = json!({
+            "sessionUpdate": "usage_update",
+            "used": 12_345,
+            "size": 200_000,
+            "cost": {"amount": 3, "currency": ""},
+            "_meta": {
+                "codebuddy.ai/requestId": "req-turn",
+                "codebuddy.ai/messageId": "msg-1",
+                "codebuddy.ai/usageByCategory": {"main": {"input_tokens": 9}},
+                "usage": {
+                    "input_tokens": 1_000,
+                    "output_tokens": 200,
+                    "cache_read_input_tokens": 5_000,
+                    "cache_creation_input_tokens": 300,
+                },
+            },
+        });
+        let samples = stream_usage_samples(&frame);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].id.as_deref(), Some("msg-1"));
+        let usage = &samples[0].usage;
+        // Anthropic 口径：input 已排除缓存，不再做减法。
+        assert_eq!(usage.input_tokens, Some(1_000));
+        assert_eq!(usage.output_tokens, Some(200));
+        assert_eq!(usage.cached_read_tokens, Some(5_000));
+        assert_eq!(usage.cached_write_tokens, Some(300));
+        assert_eq!(usage.total_tokens, None);
+    }
+
+    /// OpenAI 口径：`prompt_tokens` 含缓存命中，必须扣减后才与缓存字段相加。
+    #[test]
+    fn stream_usage_subtracts_cache_from_inclusive_prompt_tokens() {
+        let frame = json!({
+            "sessionUpdate": "usage_update",
+            "usage": {"prompt_tokens": 1_200, "completion_tokens": 300, "total_tokens": 1_500},
+            "_meta": {"provider.messageId": "resp-1"},
+        });
+        let samples = stream_usage_samples(&frame);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].id.as_deref(), Some("resp-1"));
+        // 无缓存明细 → 不做扣减。
+        assert_eq!(samples[0].usage.input_tokens, Some(1_200));
+        assert_eq!(samples[0].usage.output_tokens, Some(300));
+        assert_eq!(samples[0].usage.total_tokens, Some(1_500));
+
+        let with_details = json!({
+            "sessionUpdate": "usage_update",
+            "usage": {
+                "prompt_tokens": 1_200,
+                "completion_tokens": 300,
+                "prompt_tokens_details": {"cached_tokens": 900},
+            },
+            "_meta": {"provider.messageId": "resp-2"},
+        });
+        let samples = stream_usage_samples(&with_details);
+        assert_eq!(samples[0].usage.input_tokens, Some(300));
+        assert_eq!(samples[0].usage.cached_read_tokens, Some(900));
+    }
+
+    /// `total_tokens == input + output`（缓存已计入 input）也能判定包含口径。
+    #[test]
+    fn stream_usage_infers_inclusive_input_from_total() {
+        let frame = json!({
+            "sessionUpdate": "usage_update",
+            "usage": {
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+                "cache_read_input_tokens": 400,
+                "total_tokens": 1_100,
+            },
+            "_meta": {"codebuddy.ai/messageId": "msg-total"},
+        });
+        let samples = stream_usage_samples(&frame);
+        assert_eq!(samples[0].usage.input_tokens, Some(600));
+        assert_eq!(samples[0].usage.cached_read_tokens, Some(400));
+    }
+
+    /// 上下文占用、额度与估算拆分都不产生样本；无稳定 id 的样本标记为不可信。
+    #[test]
+    fn stream_usage_ignores_gauges_costs_and_needs_sample_id() {
+        let gauge_only = json!({
+            "sessionUpdate": "usage_update",
+            "used": 42,
+            "size": 100,
+            "cost": {"amount": 7, "currency": ""},
+            "_meta": {"codebuddy.ai/usageByCategory": {"main": 12}},
+        });
+        assert!(stream_usage_samples(&gauge_only).is_empty());
+
+        let no_id = json!({
+            "sessionUpdate": "usage_update",
+            "usage": {"input_tokens": 10, "output_tokens": 2},
+        });
+        let samples = stream_usage_samples(&no_id);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].id, None);
+    }
 
     fn prompt_event(seq: u64, timestamp: &str) -> AcpUiEvent {
         prompt_event_with_id(seq, timestamp, None)

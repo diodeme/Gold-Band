@@ -338,8 +338,13 @@ async fn run_worker(reporter: Arc<Reporter>) {
         let (batch, pending_usage, closing, stopped) = {
             let mut guard = reporter.lock();
             let state = &mut *guard;
-            // 文本按 flush 节奏成段：不跨批次累积成一个巨块。
-            state.project.close_segment();
+            if state.closing {
+                // 收尾拍：兜底补出始终没等到实质输入/终态的工具行，再排空。
+                state.project.finalize();
+            } else {
+                // 文本按 flush 节奏成段：不跨批次累积成一个巨块。
+                state.project.close_segment();
+            }
             let batch = state.project.drain(&mut state.next_seq);
             let pending_usage: Vec<String> = state.usage_pending.iter().cloned().collect();
             state.usage_pending.clear();
@@ -664,6 +669,45 @@ mod tests {
             .expect("done sender must fire");
         worker.await.expect("worker task must not panic");
         // 错误消息占用了 seq 1，排空后水位前进。
+        assert_eq!(reporter.lock().next_seq, 2);
+    }
+
+    /// 收尾拍必须兜底补出「只有占位、始终没到终态」的工具行，否则该工具在 multica
+    /// 执行记录里静默消失。
+    #[tokio::test]
+    async fn closing_tick_finalizes_placeholder_only_tool_rows() {
+        let reporter = reporter();
+        {
+            let mut state = reporter.lock();
+            let event = gold_band::acp::events::normalize_session_update(
+                1,
+                None,
+                &serde_json::json!({
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "call-1",
+                    "title": "Bash",
+                    "status": "in_progress",
+                    "rawInput": {},
+                }),
+            );
+            state.project.observe(&event);
+        }
+        let worker = tokio::spawn(run_worker(reporter.clone()));
+
+        let (done_tx, done_rx) = oneshot::channel();
+        {
+            let mut state = reporter.lock();
+            state.done = Some(done_tx);
+            state.closing = true;
+        }
+        reporter.notify.notify_one();
+
+        tokio::time::timeout(Duration::from_secs(2), done_rx)
+            .await
+            .expect("worker must signal done")
+            .expect("done sender must fire");
+        worker.await.expect("worker task must not panic");
+        // 补出的 tool_use 占用 seq 1。
         assert_eq!(reporter.lock().next_seq, 2);
     }
 }

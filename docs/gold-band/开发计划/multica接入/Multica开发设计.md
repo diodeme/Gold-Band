@@ -3333,6 +3333,33 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 ---
 
+### 12.100 改动九十八：codebuddy 执行记录空工具行 + 无 token 上报——工具行就绪门控 + 用量双通道通用识别（M5-dd，2026-11-18）
+
+**背景**：内网回归反馈——同一任务使用 claude code 时 Bash 行与 token 上报都正常，换 codebuddy 后 Bash 行命令/输出为空、usage 完全不报。用户提供 codebuddy 真实 `tool_call` 原始帧确认形状，并要求 token 来源改造**通用化**：「尽量做成通用的而不是来一个 agent 就要改造一次」。
+
+**根因**（两处均为设计缺陷，非单点补丁）：
+
+- ① **工具行发出时机与「内容就绪」解耦**：§12.99（M5-dc）的「首个快照即入队、drain 时冻结最新快照」依赖参数在下一拍前到达。codebuddy 首发是 `input:{}`/`rawInput:{}` 占位，参数由后续 `tool_call_update` 补全（`_meta["codebuddy.ai/toolArgumentsComplete"]`）——500ms flush 拍一到就把占位冻结成定稿，迟到参数永久丢失；只发占位就中断的工具则永远没有行。**「入队」此前被当成「可以定稿」，正确模型应是：入队门槛 = 已有实质输入或已到终态**。
+- ② **用量来源被写死为单一结算通道**：`AcpPromptTokenUsage::from_prompt_result` 只读 `session/prompt` 响应的 `usage`。codebuddy 不在 prompt 响应里带 usage，只在 `session/update`（`usage_update`）的 `_meta` 里逐次模型调用推送 `usage`，于是 journal 只有 `PromptStarted`、没有 `PromptCompleted` → 下游 `read_prompt_usage_segments`/`UsageAccumulator` 产出零行。按 agent 打分支会把这个问题变成「换一个适配器修一次」，必须把「用量从哪来」提升为通用双通道模型。
+
+**实现**：
+
+- **Part A（工具行就绪门控，`projector.rs`）**：`observe_tool` 改为仅当工具状态「已有实质输入（`has_substantive_value`）」或「已到终态」时才把 `tool_use` 入队；占位帧只更新快照、不占位。既有 drain 时冻结最新快照语义保持不变。新增 `finalize()`：运行结束兜底补出始终没等到实质输入/终态的工具行（退化路径排在末尾）。`event_tool_output` 输出链补齐顶层 `toolResult` 与 `toolCall.toolResult`（codebuddy 结果真实形状）。`reporter.rs` 收尾拍（`closing`）先 `finalize()` 再排空；正常拍仍只 `close_segment()` 成段。
+- **Part B（用量双通道，`src/acp/usage.rs` + `src/acp/client.rs`）**：
+  - 通用识别 `stream_usage_samples(frame)`：从顶层或 `_meta` 下一层的 `usage`/`rawUsage`/`modelUsage`/`tokenUsage` 识别逐次调用用量；字段名同义词表覆盖 snake_case/camelCase（`input_tokens`/`inputTokens`/`prompt_tokens`、`output_tokens`/`completion_tokens`、cache read 9 个名、cache write 6 个名、total）、嵌套缓存明细（`*_details.cached_tokens`）；inclusive input（`prompt_tokens`、含嵌套缓存明细、或 `total == input + output` 且含缓存）先减去缓存。稳定样本 id 取用量对象直系字段（`messageId`/`callId`/`responseId`/...）或 `_meta` 命名空间键的末段（`codebuddy.ai/messageId` 等）。
+  - turn 级收集器 `AcpStreamUsageTurn`：按样本 id 去重（codebuddy 同一 `messageId` 跨帧重复推送）、无 id 样本丢弃并计数、每 turn 上限 4096；`begin_stream_turn` 在 turn 创建时重置，`observe_stream_usage` 挂在前台 prompt turn 内的 `handle_session_update`，`finish_stream_turn` 取走合计。
+  - 仲裁：结算通道 usage 命中且**含有效 token**（`has_positive_tokens`，全零视为未上报）→ 权威值，立即写 `PromptCompleted`；否则在终态排空之后调用 `journal_stream_turn_usage`，用本 turn 流式样本求和写**同一条** `PromptCompleted`（`turn_id/turn_seq/provider/model` 与结算通道一致），下游聚合与 multica 上报零改动。两通道都没有可用用量 → 诊断 `acp.usage.source-missing`（adapter + 样本统计）。全零结算且无流式样本时保持既有行为（仍写零值记录）。
+
+**方案自评审**：过度设计——不新增端点、消息类型、持久字段或计时器。`finalize()` 是「运行结束补行」这一既有收尾语义的具体化（reporter 本就有 closing 拍）；流式通道只新增一个 turn 级内存收集器（≤4096 个字符串 id），生命周期跟随既有 `active_prompt_turn`，不改 canonical 数据模型、不引入旁路状态；仲裁复用既有 journal 记录类型，避免了「按 agent 改造上报链路」。性能——识别只在前台 turn 内对 session/update 帧读固定几处 JSON 字段（无文本扫描/正则），工具行门控减少无效 outbox 入队与 drain，无新增 I/O、无全量扫描、无阻塞。明确**不做**：不给 `tool_use` 造更新/重发语义（服务端无该能力）；不为每个 agent 维护字段名映射表。
+
+**验证结果**：先按 `bug-fix-verification` 建立红测再修复——Part A 三个测试在未修复实现上全部先红（`codebuddy_placeholder_tool_call_waits_for_complete_arguments` 用用户提供的真实帧断言占位帧不入队、参数补齐后单条 `{"command":"git status"}`；`finalize_flushes_tool_rows_that_never_reached_terminal`；`tool_result_reads_top_level_tool_result`），`closing_tick_finalizes_placeholder_only_tool_rows` 覆盖 reporter 收尾拍。修复后 `cargo test -p gold-band-desktop multica::transcript` **45 passed**（原 41 + 4）。Part B 新增 `src/acp/usage.rs` 4 条识别测试（真实 codebuddy `_meta` 帧、inclusive 减缓存、total 推断、排除 gauge/cost/无 id）与 `src/acp/client.rs` 5 条（id 去重求和、无 id 丢弃、turn 间重置与上限、端到端 `usage_update` 帧 → journal 单条 `PromptCompleted` 且总量正确、全零结算保持）；`cargo test -p gold-band acp::usage` **14 passed**、`acp::client` **208 passed**。`cargo clippy -p gold-band --lib` 对改动文件零告警（`--all-targets` 的 `examples/onboarding_environment.rs` 与 `src/im/connectors/feishu/api.rs` 错误为既有分支问题）；`rustfmt` 对改动文件干净。本地验证受 upstream `main` 的 `commands::retry_run` 导入断裂阻塞，仅临时放行做验证，验证后已还原、未提交。
+
+**遗留**：① 流式通道是 turn 内内存态——进程在 turn 中途崩溃会丢失该 turn 样本（结算通道有 raw-log 修复路径，流式通道暂无）；② 若适配器把「累计用量」而非「逐次用量」放进上述字段，求和会重复计费（当前已知适配器均为逐次口径，未为假设性形态加识别）；③ 扁平 cache 字段 + inclusive input 无法在所有形态下判别（已用嵌套明细与 total 推断收敛，仍属概率性）；④ 历史任务已上报的空工具行/零 usage 无法回填（multica 按已上报数据读取渲染）。
+
+**文件**：`src-tauri/src/multica/transcript/projector.rs`（就绪门控、`finalize`、输出链、测试）、`src-tauri/src/multica/transcript/reporter.rs`（收尾拍 finalize、测试）、`src/acp/usage.rs`（`AcpStreamUsageSample`/`stream_usage_samples`/`has_positive_tokens`、测试）、`src/acp/client.rs`（turn 收集器、仲裁、`journal_stream_turn_usage`、诊断、测试）；文档 `接入方案.md` §3.2.8（tool_use 就绪门控 + 用量双通道 + 有界性/验收）、本条。
+
+---
+
 ### 12.96 改动九十四：runtime-assets 协议对齐 multica Runtime 页签重构（M5-cz，2026-11-13）
 
 **背景**：multica 把「角色管理」「工作流管理」页面重构为**共享 / Runtime 双页签**（共享：目录发布/安装/导出/删除；Runtime：浏览本机资产清单、逐条发布/卸载/查看），并给出权威对接文档 `.claude/design/multica/2026-11-13-maling-runtime-asset-protocol.md`。逐条对照其 §4 八项改动清单：**六项已满足**（uninstall 心跳分支与幂等执行器、install 写入语义、list `is_builtin`、workflow export 剥 modelBindings、role frontmatter name==key、端点区分、60s 窗口——M5-cq/cr/cw 内网已验证）；真实差异四处，全部是对齐性小改。

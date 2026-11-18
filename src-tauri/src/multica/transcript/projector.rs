@@ -223,6 +223,28 @@ impl Projector {
         batch
     }
 
+    /// 运行结束兜底：补出始终没等到实质输入/终态的工具行（例如适配器只发占位后中断）。
+    /// 退化路径的补出行排在末尾，不参与正常事件顺序。
+    pub(crate) fn finalize(&mut self) {
+        self.close_segment();
+        let mut pending = Vec::new();
+        for key in &self.tool_order {
+            if self.tools.get(key).is_some_and(|state| !state.use_queued) {
+                pending.push(key.clone());
+            }
+        }
+        for key in pending {
+            let Some(name) = self.tools.get(&key).map(|state| state.name.clone()) else {
+                continue;
+            };
+            self.mark_tool(&key, |state| state.use_queued = true);
+            self.push_entry(OutboxEntry {
+                message: TranscriptMessage::tool_use(name, json!({})),
+                pending_input: Some(key),
+            });
+        }
+    }
+
     pub(crate) fn dropped_messages(&self) -> u64 {
         self.dropped_messages
     }
@@ -303,10 +325,19 @@ impl Projector {
             self.remember_input(&key, input.clone());
         }
         let terminal = event.status.as_deref().is_some_and(is_terminal_tool_status);
+        // 流式适配器（codebuddy 等）首个 `tool_call` 只是空占位，参数由后续
+        // `tool_call_update` 补齐。`tool_use` 一行定终身，必须等到「有实质输入」或
+        // 「已到终态」才能入队；占位帧入队会把空命令永久锁死（并在 drain 时冻结）。
+        let substantive = self
+            .tools
+            .get(&key)
+            .and_then(|state| state.input.as_ref())
+            .is_some_and(has_substantive_value);
 
-        // `use` 每个工具调用只发一次：首个快照即占住事件顺序，输入在 drain 时冻结
-        // （见 `OutboxEntry`）。先收起进行中的文本段，保证工具行排在它之前的文本之后。
-        if !self.tools.get(&key).is_some_and(|state| state.use_queued) {
+        // `use` 每个工具调用只发一次：输入在 drain 时冻结（见 `OutboxEntry`）。
+        // 先收起进行中的文本段，保证工具行排在它之前的文本之后。
+        if !self.tools.get(&key).is_some_and(|state| state.use_queued) && (substantive || terminal)
+        {
             self.close_segment();
             self.mark_tool(&key, |state| state.use_queued = true);
             self.push_entry(OutboxEntry {
@@ -470,6 +501,8 @@ fn event_tool_output(event: &AcpUiEvent) -> Option<String> {
         "/toolCall/content",
         "/rawOutput/formatted_output",
         "/rawOutput",
+        "/toolResult",
+        "/toolCall/toolResult",
         "/output",
         "/content",
     ] {
@@ -749,6 +782,102 @@ mod tests {
         ));
         let batch = drain(&mut projector);
         assert_eq!(batch[0].input, Some(json!({"command": "ls -la"})));
+    }
+
+    /// codebuddy 真实入站形状：首个 `tool_call` 只带 `input: {}` / `rawInput: {}` 占位，
+    /// 参数由后续 `tool_call_update` 补齐（`codebuddy.ai/toolArgumentsComplete`）。
+    /// 占位帧不得入队 `tool_use`——multica 的 `tool_use` 一行定终身，提前入队会永久锁死空命令。
+    #[test]
+    fn codebuddy_placeholder_tool_call_waits_for_complete_arguments() {
+        let mut projector = Projector::new(None);
+        projector.observe(&wire_tool(
+            1,
+            json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": "call_00_9D3UxqNbrSKonP86roUx4706",
+                "title": "Bash",
+                "kind": "other",
+                "status": "in_progress",
+                "input": {},
+                "rawInput": {},
+                "_meta": {
+                    "codebuddy.ai/toolName": "Bash",
+                    "codebuddy.ai/requestId": "req-1",
+                    "codebuddy.ai/conversationRequestId": "conv-1",
+                    "codebuddy.ai/messageRequestId": "msg-1",
+                    "codebuddy.ai/traceId": "trace-1",
+                    "codebuddy.ai/requestModelId": "custom:deepseek-v4-pro-maas|deepseek-v4-pro-maas-mercurjiang",
+                    "codebuddy.ai/requestModelName": "deepseek-v4-pro-maas-mercurjiang",
+                    "codebuddy.ai/responseModelId": "deepseek-v4-pro-maas",
+                    "codebuddy.ai/modelRequestId": "model-1",
+                    "codebuddy.ai/llmMessageId": "llm-1",
+                    "timestamp": "2026-11-18T07:27:58.367Z",
+                },
+            }),
+        ));
+        // 只有空占位：不得产生任何工具行。
+        assert!(drain(&mut projector).is_empty());
+
+        projector.observe(&wire_tool(
+            2,
+            json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "call_00_9D3UxqNbrSKonP86roUx4706",
+                "status": "in_progress",
+                "rawInput": {"command": "git status"},
+                "_meta": {"codebuddy.ai/toolArgumentsComplete": true},
+            }),
+        ));
+        let batch = drain(&mut projector);
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].message_type, super::super::model::TYPE_TOOL_USE);
+        assert_eq!(batch[0].tool.as_deref(), Some("Bash"));
+        assert_eq!(batch[0].input, Some(json!({"command": "git status"})));
+    }
+
+    /// 始终没有实质输入、也没到终态的工具（例如适配器只发占位后中断）：运行结束时
+    /// `finalize` 必须兜底补出 `tool_use`，不能静默丢行。
+    #[test]
+    fn finalize_flushes_tool_rows_that_never_reached_terminal() {
+        let mut projector = Projector::new(None);
+        projector.observe(&wire_tool(
+            1,
+            json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": "call-1",
+                "title": "Bash",
+                "status": "in_progress",
+                "rawInput": {},
+            }),
+        ));
+        assert!(drain(&mut projector).is_empty());
+        projector.finalize();
+        let batch = drain(&mut projector);
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].message_type, super::super::model::TYPE_TOOL_USE);
+        assert_eq!(batch[0].tool.as_deref(), Some("Bash"));
+        assert_eq!(batch[0].input, Some(json!({})));
+    }
+
+    /// 部分适配器把结果放在顶层 `toolResult`（codebuddy 的 `"completed", toolResult: output`）。
+    #[test]
+    fn tool_result_reads_top_level_tool_result() {
+        let mut projector = Projector::new(None);
+        projector.observe(&wire_tool(
+            1,
+            json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": "call-1",
+                "title": "Bash",
+                "status": "completed",
+                "rawInput": {"command": "ls"},
+                "toolResult": "file-list",
+            }),
+        ));
+        let batch = drain(&mut projector);
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch[1].message_type, super::super::model::TYPE_TOOL_RESULT);
+        assert_eq!(batch[1].output.as_deref(), Some("file-list"));
     }
 
     #[test]
